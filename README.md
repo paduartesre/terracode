@@ -173,7 +173,7 @@ The folder must exist. Keep the service local: the current API performs file ope
 
 | Symptom | What to check |
 | --- | --- |
-| Clone denied | Check the GitHub URL and your account's access while validation is private. |
+| Clone denied | Check the GitHub URL and your network connection. |
 | Unsupported Node version | Use Node 24.x in the terminal running `npm ci` and `npm start`. |
 | Interface opens but files do not load | Ensure the API is running on port 3001. Both processes must remain active. |
 | Interface started on port 5174 | Free port 5173 or use the `--strictPort` startup described above. |
@@ -209,7 +209,7 @@ Community participation is voluntary, free of charge, and unpaid.
 
 When reporting an issue, include your operating system, installation method, TerraCode version or commit, Terraform version, Node version if running from source, reproduction steps, expected behavior, and a sanitized error message. Use [GitHub issues](https://github.com/paduartesre/terracode/issues) for reproducible problems. For sensitive reports or direct inquiries, contact Pedro Duarte through [pedroduarte@terracodeiac.com](mailto:pedroduarte@terracodeiac.com), the [website](https://terracodeiac.com/#contact), or [LinkedIn](https://www.linkedin.com/in/duarpadevops).
 
-The Community Edition is intended for local use. Enterprise SaaS, GitHub/GitLab pipeline provisioning, multiuser governance, and enterprise security integrations are planned directions, not features available in this edition.
+The Community Edition is intended for local use. Enterprise SaaS, pipeline provisioning, multiuser governance, and enterprise security integrations are planned directions, not features available in this edition.
 
 ## 11. License and authorship
 
