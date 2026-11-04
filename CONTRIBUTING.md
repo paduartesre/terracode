@@ -2,7 +2,7 @@
 
 ## English
 
-The community repository is [paduartesre/terracode](https://github.com/paduartesre/terracode). GitLab is the maintainer's private development repository; contributors do not need access to it.
+The community repository is [paduartesre/terracode](https://github.com/paduartesre/terracode).
 
 You can help by testing local workflows, improving documentation, reporting reproducible problems, or proposing code changes. No invitation or selection is required for community participation. Participation is voluntary, free of charge, and unpaid.
 
@@ -18,7 +18,7 @@ Never include credentials, tokens, private keys, Terraform state, saved plans, o
 
 ## Português (Brasil)
 
-O repositório comunitário é [paduartesre/terracode](https://github.com/paduartesre/terracode). O GitLab é o repositório privado de desenvolvimento do mantenedor; não é necessário acessá-lo para contribuir.
+O repositório comunitário é [paduartesre/terracode](https://github.com/paduartesre/terracode).
 
 Você pode ajudar testando fluxos locais, melhorando a documentação, relatando problemas reproduzíveis ou propondo alterações no código. A participação na comunidade não exige convite nem seleção. A participação é voluntária, gratuita e sem remuneração.
 
