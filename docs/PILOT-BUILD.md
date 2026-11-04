@@ -1,6 +1,6 @@
 # Community executable distribution
 
-The community source, issues, and executable releases belong in [paduartesre/terracode](https://github.com/paduartesre/terracode). GitLab remains the maintainer's private development repository. Keep the GitHub repository private during final validation and announce public availability only when ready. The accompanied usability group of up to **ten testers** remains a separate feedback initiative; it does not limit access to the future public edition. Participation is voluntary, free of charge, and unpaid.
+The community source, issues, and executable releases belong in [paduartesre/terracode](https://github.com/paduartesre/terracode). GitLab remains the maintainer's private development repository. Executables are an optional installation method; publish each package only after platform validation and confirmation of its corresponding source. Community participation is voluntary, free of charge, and unpaid.
 
 ## Tester package
 
@@ -37,7 +37,7 @@ The smoke test copies only the executable into a fresh temporary directory, uses
 
 ## Distribution and review
 
-After validation, publish executables through [GitHub Releases](https://github.com/paduartesre/terracode/releases) with their matching source and build instructions. Keep draft releases and repository visibility private until the maintainer authorizes the public launch. For an earlier private handoff, make the corresponding source available to recipients under AGPLv3 too. This packaging work does not itself publish a release, invite members, change visibility, or deploy a SaaS service.
+After validation, publish executables through [GitHub Releases](https://github.com/paduartesre/terracode/releases) with their matching source and build instructions. Keep releases as drafts until their packages are validated and the corresponding source is accessible. For an earlier private handoff, make the corresponding source available to recipients under AGPLv3 too. This packaging work does not itself publish a release, invite members, change visibility, or deploy a SaaS service.
 
 Start with the included demo, then an authorized test project. Ask each tester whether they installed without help, what task they attempted, what was useful/confusing and whether they would use TerraCode again. Never collect credentials, state or client data. There is no automatic telemetry, feedback upload or updater added by the packaging layer.
 
@@ -47,7 +47,7 @@ TerraCode is licensed under [AGPL-3.0-only](../LICENSE), Copyright (c) 2026 Pedr
 
 ## Português (Brasil)
 
-O GitHub será o canal comunitário de código, issues e releases; o GitLab continua privado para o mantenedor. Mantenha o GitHub privado durante a validação final. O grupo acompanhado de até **dez participantes** é uma iniciativa separada e não limita o futuro acesso público. A participação é voluntária, gratuita e sem remuneração. Use `LEIA-ME.txt` e `FEEDBACK.txt` para instalação e retorno dos testes.
+O GitHub é o canal comunitário de código, issues e releases; o GitLab continua privado para o mantenedor. Executáveis são uma opção de instalação e cada pacote exige validação da plataforma e acesso ao código correspondente. A participação é voluntária, gratuita e sem remuneração. Use `LEIA-ME.txt` e `FEEDBACK.txt` para instalação e retorno dos testes.
 
 O pacote inclui runtime, backend em bytecode, interface compilada, exemplo local, instruções, checksum, avisos de terceiros, `LICENSE` e `SOURCE.txt`. Os fontes são disponibilizados separadamente na versão exata do GitHub identificada no pacote. Não inclui histórico Git, `node_modules` nem source maps. O JavaScript do navegador continua inspecionável. A licença é AGPL-3.0-only, sem a antiga restrição de redistribuição do piloto privado.
 

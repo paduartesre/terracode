@@ -6,7 +6,7 @@ A local workspace for editing configuration, running Terraform, and inspecting G
 
 TerraCode runs a React frontend in your browser and a Node.js backend on your machine. Commands use your local Terraform, Git, and, when needed, cloud CLI installations. The presentation website does not execute these commands.
 
-> Community launch preparation: [paduartesre/terracode](https://github.com/paduartesre/terracode) is the destination for community source code, issues, and releases. Public availability will be announced after the maintainer completes validation. TerraCode is licensed under [GNU AGPLv3](LICENSE).
+> TerraCode Community Edition is free software under [GNU AGPLv3](LICENSE). Source code, issues and contributions are maintained at [paduartesre/terracode](https://github.com/paduartesre/terracode).
 
 ## 1. Prerequisites
 
@@ -43,7 +43,7 @@ npm ci
 npm start
 ```
 
-During private validation, cloning requires an authorized GitHub account. After public release, no repository invitation is required to download the source. Do not embed tokens in the repository URL.
+Clone the repository using the commands above. Do not embed tokens in the repository URL.
 
 Prefer an executable? Packages will be listed under [GitHub Releases](https://github.com/paduartesre/terracode/releases) once validated and published. Check each release's supported operating system, architecture, instructions, and corresponding source version; an executable is not yet promised for every platform.
 
@@ -193,6 +193,8 @@ npm ci
 npm start
 ```
 
+CI runs build, lint, tests and coverage on pull requests. See the [maintainer guide](docs/MAINTAINER.md) for commands, coverage baselines, artifacts and email configuration.
+
 Existing contributor scripts are `npm run build`, `npm run lint`, and `npm test`. `tests/integration/terraform.test.ts` expects a running API at `http://localhost:3001`; start `npm run server` in another terminal before running `npm test`. The `server.test.mjs` backend suite has a separate configuration:
 
 ```bash
@@ -201,11 +203,11 @@ npx vitest run --config vitest.server.config.mts
 
 ## 10. Participate and get help
 
-Once the community repository is public, you can use TerraCode, report issues, fork it, and propose improvements through [GitHub](https://github.com/paduartesre/terracode). See [CONTRIBUTING.md](CONTRIBUTING.md) for the workflow. Prior selection or participation in the initial testing group is not required to use the public edition.
+Use TerraCode, report issues, fork it, and propose improvements through [GitHub](https://github.com/paduartesre/terracode). See [CONTRIBUTING.md](CONTRIBUTING.md) for the workflow. No selection or invitation is required for community participation.
 
-The initial accompanied usability group remains separate from general community access. Participation is voluntary, free of charge, and unpaid.
+Community participation is voluntary, free of charge, and unpaid.
 
-When reporting an issue, include your operating system, installation method, TerraCode version or commit, Terraform version, Node version if running from source, reproduction steps, expected behavior, and a sanitized error message. Use [GitHub issues](https://github.com/paduartesre/terracode/issues) when available. During private validation, or for sensitive reports, contact Pedro Duarte through [pedroduarte@terracodeiac.com](mailto:pedroduarte@terracodeiac.com), the [website](https://terracodeiac.com/#contact), or [LinkedIn](https://www.linkedin.com/in/duarpadevops).
+When reporting an issue, include your operating system, installation method, TerraCode version or commit, Terraform version, Node version if running from source, reproduction steps, expected behavior, and a sanitized error message. Use [GitHub issues](https://github.com/paduartesre/terracode/issues) for reproducible problems. For sensitive reports or direct inquiries, contact Pedro Duarte through [pedroduarte@terracodeiac.com](mailto:pedroduarte@terracodeiac.com), the [website](https://terracodeiac.com/#contact), or [LinkedIn](https://www.linkedin.com/in/duarpadevops).
 
 The Community Edition is intended for local use. Enterprise SaaS, GitHub/GitLab pipeline provisioning, multiuser governance, and enterprise security integrations are planned directions, not features available in this edition.
 

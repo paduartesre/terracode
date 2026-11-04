@@ -6,7 +6,7 @@ Workspace local para editar configurações, executar Terraform e acompanhar Git
 
 O TerraCode usa um frontend React no navegador e um backend Node.js na sua máquina. Os comandos são executados pelas suas instalações locais de Terraform, Git e, quando necessário, das CLIs de nuvem. O site de apresentação não executa esses comandos.
 
-> Preparação para o lançamento comunitário: [paduartesre/terracode](https://github.com/paduartesre/terracode) é o destino do código comunitário, das issues e das releases. A disponibilidade pública será anunciada após a validação pelo mantenedor. O TerraCode está licenciado sob a [GNU AGPLv3](LICENSE).
+> A edição comunitária do TerraCode é software livre sob a [GNU AGPLv3](LICENSE). Código, issues e contribuições são mantidos em [paduartesre/terracode](https://github.com/paduartesre/terracode).
 
 ## 1. Pré-requisitos
 
@@ -43,7 +43,7 @@ npm ci
 npm start
 ```
 
-Durante a validação privada, o clone exige uma conta GitHub com acesso autorizado. Após o lançamento público, não será necessário convite para baixar o código. Não inclua tokens na URL do repositório.
+Clone o repositório com os comandos acima. Não inclua tokens na URL do repositório.
 
 Prefere um executável? Os pacotes serão disponibilizados em [GitHub Releases](https://github.com/paduartesre/terracode/releases) após validação e publicação. Confira o sistema operacional, a arquitetura, as instruções e a versão correspondente do código em cada release; ainda não há promessa de executável para todas as plataformas.
 
@@ -193,6 +193,8 @@ npm ci
 npm start
 ```
 
+A CI executa build, lint, testes e cobertura nos pull requests. Consulte o [guia do mantenedor](docs/MAINTAINER.md) para comandos, cobertura inicial, artefatos e configuração de e-mail.
+
 Para contribuidores, os scripts existentes são `npm run build`, `npm run lint` e `npm test`. A suíte `tests/integration/terraform.test.ts` usa uma API em execução em `http://localhost:3001`; inicie `npm run server` em outro terminal antes de `npm test`. A suíte de backend em `server.test.mjs` usa a configuração específica:
 
 ```bash
@@ -201,11 +203,11 @@ npx vitest run --config vitest.server.config.mts
 
 ## 10. Participar e obter ajuda
 
-Quando o repositório comunitário estiver público, você poderá usar o TerraCode, relatar problemas, fazer fork e propor melhorias pelo [GitHub](https://github.com/paduartesre/terracode). Consulte o fluxo em [CONTRIBUTING.md](CONTRIBUTING.md). Não será necessário passar por seleção nem integrar o grupo inicial de testes para usar a edição pública.
+Use o TerraCode, relate problemas, faça fork e proponha melhorias pelo [GitHub](https://github.com/paduartesre/terracode). Consulte o fluxo em [CONTRIBUTING.md](CONTRIBUTING.md). A participação na comunidade não exige seleção nem convite.
 
-O grupo inicial com acompanhamento de usabilidade é separado do acesso geral da comunidade. A participação é voluntária, gratuita e sem remuneração.
+A participação na comunidade é voluntária, gratuita e sem remuneração.
 
-Ao relatar um problema, informe sistema operacional, método de instalação, versão ou commit do TerraCode, versão do Terraform, versão do Node se executar pelo código, passos para reproduzir, resultado esperado e mensagem de erro sem segredos. Use as [issues do GitHub](https://github.com/paduartesre/terracode/issues) quando disponíveis. Durante a validação privada, ou para relatos sensíveis, fale com Pedro Duarte pelo e-mail [pedroduarte@terracodeiac.com](mailto:pedroduarte@terracodeiac.com), pelo [site](https://terracodeiac.com/#contact) ou pelo [LinkedIn](https://www.linkedin.com/in/duarpadevops).
+Ao relatar um problema, informe sistema operacional, método de instalação, versão ou commit do TerraCode, versão do Terraform, versão do Node se executar pelo código, passos para reproduzir, resultado esperado e mensagem de erro sem segredos. Use as [issues do GitHub](https://github.com/paduartesre/terracode/issues) para problemas reproduzíveis. Para relatos sensíveis ou contato direto, fale com Pedro Duarte pelo e-mail [pedroduarte@terracodeiac.com](mailto:pedroduarte@terracodeiac.com), pelo [site](https://terracodeiac.com/#contact) ou pelo [LinkedIn](https://www.linkedin.com/in/duarpadevops).
 
 A edição comunitária é destinada ao uso local. SaaS empresarial, provisionamento de pipelines GitHub/GitLab, governança multiusuário e integrações empresariais de segurança são planos de evolução, não recursos disponíveis nesta versão.
 

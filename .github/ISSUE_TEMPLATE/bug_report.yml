@@ -1,0 +1,53 @@
+name: Bug report / Relatar problema
+description: Report a reproducible problem / Relate um problema reproduzível
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: "For security issues, email pedroduarte@terracodeiac.com privately. Do not include credentials, state, plans or customer data."
+  - type: input
+    id: version
+    attributes:
+      label: TerraCode version or commit / Versão ou commit
+    validations:
+      required: true
+  - type: dropdown
+    id: installation
+    attributes:
+      label: Installation / Instalação
+      options:
+        - Source / Código-fonte
+        - Executable / Executável
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: OS, Terraform, Git and Node versions / Sistema e versões
+      description: Include WSL2 if applicable. Node is needed only for source installations.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce / Passos para reproduzir
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected and actual behavior / Comportamento esperado e observado
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Sanitized logs or screenshots / Logs ou imagens sem dados sensíveis
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Before submitting / Antes de enviar
+      options:
+        - label: I removed secrets and customer data / Removi segredos e dados de clientes
+          required: true
+
