@@ -1,0 +1,9 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Installation guide / Guia de instalação
+    url: https://github.com/paduartesre/terracode#readme
+    about: Local installation and first steps / Instalação local e primeiros passos
+  - name: Contact and security reports / Contato e relatos de segurança
+    url: https://terracodeiac.com/#contact
+    about: Use email for sensitive reports / Use e-mail para relatos sensíveis
+

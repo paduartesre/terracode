@@ -1,0 +1,28 @@
+name: Improvement / Propor melhoria
+description: Explain a workflow or documentation improvement / Explique uma melhoria
+title: "[Improvement]: "
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or use case / Problema ou cenário de uso
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior / Comportamento proposto
+    validations:
+      required: true
+  - type: textarea
+    id: validation
+    attributes:
+      label: How would you validate it? / Como você validaria?
+      description: Describe useful tests, expected benefits and alternatives.
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Contribution / Contribuição
+      options:
+        - label: I can help implement or test this proposal / Posso ajudar a implementar ou testar
+

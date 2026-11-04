@@ -1,0 +1,33 @@
+name: CI email report
+
+on:
+  workflow_run:
+    workflows: [TerraCode CI]
+    types: [completed]
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  notify:
+    name: Email report (SMTP required)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      # Use only the trusted workflow revision, never code from the tested PR.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.workflow_sha }}
+          persist-credentials: false
+          sparse-checkout: scripts/notify_ci.py
+          sparse-checkout-cone-mode: false
+      - name: Send report to project maintainer
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SMTP_HOST: ${{ secrets.SMTP_HOST }}
+          SMTP_PORT: ${{ secrets.SMTP_PORT }}
+          SMTP_USERNAME: ${{ secrets.SMTP_USERNAME }}
+          SMTP_PASSWORD: ${{ secrets.SMTP_PASSWORD }}
+        run: python3 scripts/notify_ci.py
+
