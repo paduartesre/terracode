@@ -193,7 +193,7 @@ npm ci
 npm start
 ```
 
-A CI executa build, lint, testes e cobertura nos pull requests. Consulte o [guia do mantenedor](docs/MAINTAINER.md) para comandos, cobertura inicial, artefatos e configuração de e-mail.
+A CI executa build, lint, testes e cobertura nos pull requests. Consulte o [guia do mantenedor](docs/MAINTAINER.md) para comandos, cobertura inicial e artefatos.
 
 Para contribuidores, os scripts existentes são `npm run build`, `npm run lint` e `npm test`. A suíte `tests/integration/terraform.test.ts` usa uma API em execução em `http://localhost:3001`; inicie `npm run server` em outro terminal antes de `npm test`. A suíte de backend em `server.test.mjs` usa a configuração específica:
 
