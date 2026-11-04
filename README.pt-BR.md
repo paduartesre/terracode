@@ -173,7 +173,7 @@ A pasta deve existir. Mantenha o serviço local; a API atual executa comandos e 
 
 | Sintoma | O que conferir |
 | --- | --- |
-| Clone negado | Confira a URL do GitHub e o acesso da sua conta enquanto a validação for privada. |
+| Clone negado | Confira a URL do GitHub e sua conexão com a rede. |
 | Erro de versão do Node | Use Node 24.x no mesmo terminal de `npm ci` e `npm start`. |
 | Interface abre, mas arquivos não carregam | Confira se a API está em execução na porta 3001; os dois processos devem permanecer ativos. |
 | Interface iniciou em 5174 | Libere a porta 5173 ou use a inicialização com `--strictPort` descrita acima. |
@@ -209,7 +209,7 @@ A participação na comunidade é voluntária, gratuita e sem remuneração.
 
 Ao relatar um problema, informe sistema operacional, método de instalação, versão ou commit do TerraCode, versão do Terraform, versão do Node se executar pelo código, passos para reproduzir, resultado esperado e mensagem de erro sem segredos. Use as [issues do GitHub](https://github.com/paduartesre/terracode/issues) para problemas reproduzíveis. Para relatos sensíveis ou contato direto, fale com Pedro Duarte pelo e-mail [pedroduarte@terracodeiac.com](mailto:pedroduarte@terracodeiac.com), pelo [site](https://terracodeiac.com/#contact) ou pelo [LinkedIn](https://www.linkedin.com/in/duarpadevops).
 
-A edição comunitária é destinada ao uso local. SaaS empresarial, provisionamento de pipelines GitHub/GitLab, governança multiusuário e integrações empresariais de segurança são planos de evolução, não recursos disponíveis nesta versão.
+A edição comunitária é destinada ao uso local. SaaS empresarial, provisionamento de pipelines, governança multiusuário e integrações empresariais de segurança são planos de evolução, não recursos disponíveis nesta versão.
 
 ## 11. Licença e autoria
 
