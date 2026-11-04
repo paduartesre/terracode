@@ -17,7 +17,7 @@ No Git history, original application sources, `node_modules`, or source maps are
 
 This artifact targets Linux x64 with glibc (including Ubuntu 24.04 / Ubuntu in WSL2). Native Windows, macOS, ARM64 and Alpine builds are not included or validated. Node.js and npm are not required by testers. Git, Terraform and optional provider CLIs remain local prerequisites; Terraform is not redistributed.
 
-## Build as maintainer
+## Build from source
 
 Use Linux x64 and **Node.js v24.22.1**. Compiler and embedded runtime must match because V8 bytecode is runtime-specific. The packaging dependencies are pinned in `package-lock.json`.
 
@@ -37,20 +37,20 @@ The smoke test copies only the executable into a fresh temporary directory, uses
 
 ## Distribution and review
 
-After validation, publish executables through [GitHub Releases](https://github.com/paduartesre/terracode/releases) with their matching source and build instructions. Keep releases as drafts until their packages are validated and the corresponding source is accessible. For an earlier private handoff, make the corresponding source available to recipients under AGPLv3 too. This packaging work does not itself publish a release, invite members, change visibility, or deploy a SaaS service.
+After validation, publish executables through [GitHub Releases](https://github.com/paduartesre/terracode/releases) with their matching source and build instructions.
 
 Start with the included demo, then an authorized test project. Ask each tester whether they installed without help, what task they attempted, what was useful/confusing and whether they would use TerraCode again. Never collect credentials, state or client data. There is no automatic telemetry, feedback upload or updater added by the packaging layer.
 
 The executable listens on loopback ports 5173 (interface) and 3001 (API). Existing CORS restrictions and file-root controls remain in effect. It deliberately overrides HOST/PORT for this distribution to avoid unintentionally exposing the local API. Cloud logins and paid integrations still depend on the user's environment and are outside the cloud-free smoke test.
 
-TerraCode is licensed under [AGPL-3.0-only](../LICENSE), Copyright (c) 2026 Pedro Duarte. Distribution, modification, and commercial use follow that license, including the corresponding-source obligations. Remove the previous private-evaluation redistribution restriction from packages built for this community edition. Contributions follow [CONTRIBUTING.md](../CONTRIBUTING.md); no source-project invitation is required after the GitHub launch.
+TerraCode is licensed under [AGPL-3.0-only](../LICENSE), Copyright (c) 2026 Pedro Duarte. Distribution, modification, and commercial use follow that license, including the corresponding-source obligations. Contributions follow [CONTRIBUTING.md](../CONTRIBUTING.md); no source-project invitation is required after the GitHub launch.
 
 ## Português (Brasil)
 
 O GitHub é o canal comunitário de código, issues e releases. Executáveis são uma opção de instalação e cada pacote exige validação da plataforma e acesso ao código correspondente. A participação é voluntária, gratuita e sem remuneração. Use `LEIA-ME.txt` e `FEEDBACK.txt` para instalação e retorno dos testes.
 
-O pacote inclui runtime, backend em bytecode, interface compilada, exemplo local, instruções, checksum, avisos de terceiros, `LICENSE` e `SOURCE.txt`. Os fontes são disponibilizados separadamente na versão exata do GitHub identificada no pacote. Não inclui histórico Git, `node_modules` nem source maps. O JavaScript do navegador continua inspecionável. A licença é AGPL-3.0-only, sem a antiga restrição de redistribuição do piloto privado.
+O pacote inclui runtime, backend em bytecode, interface compilada, exemplo local, instruções, checksum, avisos de terceiros, `LICENSE` e `SOURCE.txt`. Os fontes são disponibilizados separadamente na versão exata do GitHub identificada no pacote. Não inclui histórico Git, `node_modules` nem source maps. O JavaScript do navegador continua inspecionável. A licença é AGPL-3.0-only.
 
-O alvo atual é Linux x64 com glibc, como Ubuntu 24.04 e Ubuntu no WSL2. Windows nativo, macOS, ARM64 e Alpine não estão incluídos. Git, Terraform e CLIs opcionais permanecem instalados no ambiente do usuário. Antes da release pública, gere o pacote a partir do commit final no GitHub e confira se o código e as instruções apontados em `SOURCE.txt` estão acessíveis aos destinatários. O script grava o link, mas não valida sua disponibilidade remota. Preserve as licenças do runtime e dos demais componentes. As instruções de build e validação para o mantenedor estão acima.
+O alvo atual é Linux x64 com glibc, como Ubuntu 24.04 e Ubuntu no WSL2. Windows nativo, macOS, ARM64 e Alpine não estão incluídos. Git, Terraform e CLIs opcionais permanecem instalados no ambiente do usuário. Antes da release pública, gere o pacote a partir do commit final no GitHub e confira se o código e as instruções apontados em `SOURCE.txt` estão acessíveis aos destinatários. O script grava o link, mas não valida sua disponibilidade remota. Preserve as licenças do runtime e dos demais componentes. As instruções de build e validação estão acima.
 
 References: [Node SEA](https://nodejs.org/download/release/v24.22.1/docs/api/single-executable-applications.html), [Bytenode](https://github.com/bytenode/bytenode).
