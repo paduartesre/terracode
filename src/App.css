@@ -1,0 +1,3195 @@
+.file-explorer {
+  flex: 0 0 520px;
+  /* border-box so the 1rem padding stays INSIDE the viewport height — with the
+     default content-box the box grew past .app-container and its bottom was
+     clipped (unreachable) by the container's overflow:hidden. */
+  height: 100%;
+  min-height: 0;
+  box-sizing: border-box;
+  border-right: 1px solid var(--border);
+  padding: 1rem;
+  background: #fafbfc;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  /* The sidebar keeps this hardcoded light background in BOTH OS themes, so all
+     text and controls inside must use explicit dark colors. Theme variables flip
+     to white under prefers-color-scheme: dark and vanish on the white panel. */
+  color: #24292f;
+}
+
+/* Dedicated right-hand Git sidebar — mirrors .file-explorer but anchored to the
+   right edge of the app container. Same light background in both OS themes, so it
+   needs the same explicit dark-color overrides for its git-panel controls. */
+.git-sidebar {
+  flex: 0 0 360px;
+  /* border-box so the 1rem padding stays INSIDE the viewport height — with the
+     default content-box the box grew 2rem past .app-container and its bottom
+     (where the Commit button sits) was clipped by the container's overflow:hidden. */
+  height: 100%;
+  min-height: 0;
+  box-sizing: border-box;
+  border-left: 1px solid var(--border);
+  padding: 1rem;
+  background: #fafbfc;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  color: #24292f;
+}
+
+/* The git panel is the sidebar's main content, so drop its card chrome and let it
+   read as a native section of the light sidebar (matching the flat tree on the left). */
+.git-sidebar .git-panel {
+  margin-top: 0.5rem;
+  border: none;
+  background: transparent;
+  padding: 0;
+}
+
+/* Form controls do NOT inherit text color — the UA stylesheet gives buttons
+   `buttontext` and inputs `fieldtext`, both of which flip to white under
+   color-scheme: dark. The sidebar stays light in every theme, so force explicit
+   colors on all of them (sidebar buttons are solid #1b2040 with white text). */
+.file-explorer .path-bar button,
+.file-explorer .allow-folder-btn,
+.file-explorer .tree-row-actions button {
+  color: #fff;
+}
+
+/* Inputs also get a dark UA field background under color-scheme: dark, so pin
+   an explicit light background to match the rest of the sidebar. */
+.file-explorer .path-bar input {
+  background: #fff;
+  color: #24292f;
+}
+
+.file-explorer .path-bar input::placeholder {
+  color: #6b7280;
+}
+
+/* Git panel plain-text labels (inputs/buttons keep their own solid backgrounds). */
+.git-sidebar .git-section-title,
+.git-sidebar .git-note,
+.git-sidebar .git-field-label,
+.git-sidebar .git-remote-name,
+.git-sidebar .git-remote-url {
+  color: #24292f;
+}
+
+.path-bar {
+  margin-bottom: 1rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.path-bar input {
+  flex: 1;
+  padding: 0.5rem;
+  font-size: 14px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.path-bar button {
+  padding: 0.5rem 1rem;
+  background: #1b2040;
+  border: none;
+  color: #fff;
+  border-radius: 6px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+  cursor: pointer;
+}
+
+.path-bar button:hover {
+  background: #2d3460;
+}
+
+/* Simplified folder/file styles */
+.folder,
+.file {
+  padding: 0.5rem;
+  margin: 0.25rem 0;
+  border-radius: 4px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 14px;
+}
+
+.folder:hover,
+.file:hover {
+  background: #f1f3f5;
+}
+
+.folder.selected,
+.file.selected {
+  background: #e4e6eb;
+  font-weight: 500;
+}
+
+.folder {
+  color: #2c3e50;
+}
+
+.folder .folder-icon {
+  width: 12px;
+  text-align: center;
+}
+
+.folder .folder-name {
+  font-weight: 500;
+  color: #2c3e50;
+}
+
+.file {
+  color: #4a4a4a;
+}
+
+.file .file-icon {
+  width: 12px;
+  text-align: center;
+}
+
+.file .file-name {
+  color: #4a4a4a;
+}
+
+/* Children container */
+.children {
+  padding-left: 1rem;
+  margin-top: 0.5rem;
+  border-left: 1px solid #dcdfe6;
+}
+
+/* Terra Code brand header — full-width gradient bar above the workspace. The
+   sweep runs from the dark base through violet into the theme accent, so it
+   adapts to light/dark automatically via var(--accent). */
+.app-header {
+  flex: 0 0 52px;
+  display: flex;
+  align-items: center;
+  padding: 0 14px;
+  background: linear-gradient(90deg, #16171d 0%, #3b2a5e 42%, #8b5cf6 78%, var(--accent) 100%);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14), 0 1px 8px rgba(0, 0, 0, 0.25);
+}
+
+/* Terra Code wordmark — the public/ banner is a wide 315x85 transparent image
+   (white + violet artwork), so scale it by height to fit the bar; width follows
+   the aspect ratio (~111px at this size). */
+.app-logo {
+  display: block;
+  height: 30px;
+  width: auto;
+}
+
+/* App layout — locked to the viewport so only individual panes scroll, never the page. */
+.app-container {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.app-content {
+  flex: 1;
+  min-width: 0;
+  padding: 1rem;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* Sidebar resize handles — thin grab strips on each sidebar's inner edge. Drag to
+   resize (width is persisted in localStorage); double-click resets the default. */
+.sb-resizer {
+  flex: 0 0 5px;
+  cursor: col-resize;
+  background: transparent;
+  transition: background-color 0.15s ease;
+  touch-action: none;
+}
+
+.sb-resizer:hover,
+body.sb-resizing .sb-resizer {
+  background: rgba(27, 32, 64, 0.3);
+}
+
+/* While dragging: lock the cursor and disable text selection app-wide so fast
+   pointer moves never grab a text range or flip to the I-beam cursor. */
+body.sb-resizing {
+  user-select: none;
+  cursor: col-resize;
+}
+
+/* Scrollable body of the center pane. Only this region scrolls, so the tab bar and
+   editor toolbar stay pinned while long files scroll within their own box. */
+.content-body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+/* Word wrap off (settings): code keeps its raw line structure and scrolls
+   horizontally instead of wrapping. The base rule wraps by default. */
+.content-body.wrap-off .file-content,
+.content-body.wrap-off .diff-view {
+  white-space: pre;
+  overflow-x: auto;
+}
+
+/* File content viewer */
+.file-viewer {
+  background: #f8f9fa;
+  padding: 1.5rem;
+  border-radius: 8px;
+  margin-top: 1rem;
+}
+
+/* Syntax token palette. Defined on .content-body — the shared ancestor of the
+   read-only view (.file-content), diffs (.diff-view) and the edit overlay
+   (.editor-highlight) — so all three inherit identical colors per theme. */
+.content-body {
+  --tok-keyword: #8250df;
+  --tok-string: #0a7d33;
+  --tok-number: #b26a00;
+  --tok-comment: #989da5;
+  --tok-function: #155eec;
+  --tok-attr: #0b7285;
+  --tok-variable: #cf222e;
+}
+
+.file-content,
+.diff-view {
+  /* --user-mono is set inline on .content-body when the user picks a font family */
+  font-family: var(--user-mono, var(--mono));
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text-h);
+  background: var(--code-bg);
+  padding: 1rem;
+  border-radius: 6px;
+  text-align: left;
+}
+
+/* index.css carries a global Vite-template `code` rule (display:inline-flex,
+   font-size:15px, line-height:135%, padding:4px 8px) that would break the
+   overlay alignment. Neutralize every one of those properties so the <pre>
+   layer and the <textarea> share identical metrics. */
+.file-content code,
+.editor-highlight code {
+  display: block;
+  font-family: inherit;
+  font-size: inherit;
+  line-height: inherit;
+  padding: 0;
+  background: none;
+  border-radius: 0;
+}
+
+/* Theme override support (settings drawer): every dark-mode block below is scoped
+   to :root:not(.theme-light) so a forced light theme suppresses it, and duplicated
+   under .theme-dark for the forced dark override. See index.css for the variables. */
+@media (prefers-color-scheme: dark) {
+  :root:not(.theme-light) .content-body {
+    --tok-keyword: #c084fc;
+    --tok-string: #7ee787;
+    --tok-number: #ffa657;
+    --tok-comment: #8b949e;
+    --tok-function: #79c0ff;
+    --tok-attr: #76c7e0;
+    --tok-variable: #ffa198;
+  }
+}
+
+.theme-dark .content-body {
+  --tok-keyword: #c084fc;
+  --tok-string: #7ee787;
+  --tok-number: #ffa657;
+  --tok-comment: #8b949e;
+  --tok-function: #79c0ff;
+  --tok-attr: #76c7e0;
+  --tok-variable: #ffa198;
+}
+
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-literal {
+  color: var(--tok-keyword);
+}
+
+.hljs-string,
+.hljs-regexp,
+.hljs-addition {
+  color: var(--tok-string);
+}
+
+.hljs-number {
+  color: var(--tok-number);
+}
+
+.hljs-comment,
+.hljs-quote {
+  color: var(--tok-comment);
+  font-style: italic;
+}
+
+.hljs-title,
+.hljs-section {
+  color: var(--tok-function);
+}
+
+.hljs-attr,
+.hljs-attribute,
+.hljs-selector-class,
+.hljs-selector-id {
+  color: var(--tok-attr);
+}
+
+.hljs-variable,
+.hljs-subst,
+.hljs-template-variable {
+  color: var(--tok-variable);
+}
+
+.file-path {
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--text);
+  margin-bottom: 0.75rem;
+  word-break: break-all;
+}
+
+/* Status messages */
+.tree-status,
+.file-status {
+  font-size: 13px;
+  color: var(--text);
+  padding: 0.5rem;
+}
+
+.tree-status.error,
+.file-status.error {
+  color: #d64545;
+}
+
+/* "Open this folder" action shown when the server denies a path */
+.allow-folder-btn {
+  display: block;
+  margin-top: 0.375rem;
+  padding: 0.25rem 0.6rem;
+  font-size: 12px;
+  background: #1b2040;
+  border: none;
+  color: #fff;
+  border-radius: 6px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+  cursor: pointer;
+}
+
+.allow-folder-btn:hover:not(:disabled) {
+  background: #2d3460;
+}
+
+.allow-folder-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.root-path {
+  font-size: 12px;
+  opacity: 0.7;
+  margin-bottom: 0.5rem;
+  word-break: break-all;
+}
+
+/* New file/folder toolbar */
+.tree-actions {
+  margin-bottom: 0.5rem;
+}
+
+.tree-actions button {
+  flex: 1;
+}
+
+/* Per-row rename/delete actions, visible on hover */
+.tree-row-actions {
+  display: none;
+  margin-left: auto;
+  gap: 2px;
+}
+
+.file:hover .tree-row-actions,
+.folder:hover .tree-row-actions {
+  display: inline-flex;
+}
+
+.tree-row-actions button {
+  padding: 0 4px;
+  font-size: 12px;
+  line-height: 1.5;
+  background: #1b2040;
+  border: none;
+  color: #fff;
+  border-radius: 6px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+  cursor: pointer;
+  opacity: 0.6;
+}
+
+.tree-row-actions button:hover {
+  opacity: 1;
+}
+
+/* Recent files list */
+.recent-section {
+  margin-bottom: 0.75rem;
+}
+
+.recent-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.375rem;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.6;
+  padding: 0.25rem 0.5rem;
+}
+
+.recent-clear {
+  flex: none;
+  padding: 0 0.3rem;
+  font-size: 14px;
+  line-height: 1.2;
+  background: transparent;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  opacity: 0.7;
+}
+
+.recent-clear:hover {
+  opacity: 1;
+}
+
+.recent-item .file-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* In-file find/replace bar */
+.find-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.find-bar input {
+  width: 180px;
+  padding: 0.35rem 0.5rem;
+  font-size: 13px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.find-count {
+  font-size: 12px;
+  opacity: 0.7;
+  min-width: 80px;
+}
+
+.find-count.none {
+  color: #d64545;
+  opacity: 1;
+}
+
+.find-bar button {
+  padding: 0.3rem 0.6rem;
+  font-size: 12px;
+  background: #e2e8f0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.find-bar button:hover:not(:disabled) {
+  background: #cbd5e1;
+}
+
+.find-bar button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.editor-status .find-toggle {
+  padding: 0.1rem 0.4rem;
+  font-size: 12px;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  cursor: pointer;
+  color: inherit;
+}
+
+.editor-status .find-toggle:hover {
+  background: #e2e8f0;
+}
+
+/* Editor toolbar */
+.editor-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+}
+
+.editor-toolbar .file-path {
+  flex: 1;
+  margin-bottom: 0;
+}
+
+.save-state {
+  font-size: 13px;
+  color: var(--text);
+}
+
+.save-state.dirty {
+  color: #b26a00;
+  font-weight: 500;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not(.theme-light) .save-state.dirty {
+    color: #ffa657;
+  }
+}
+
+.theme-dark .save-state.dirty {
+  color: #ffa657;
+}
+
+.editor-toolbar button,
+.toolbar-button {
+  padding: 0.4rem 1rem;
+  font-size: 14px;
+  background: var(--accent-bg);
+  border: 1px solid var(--accent-border);
+  color: var(--text-h);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.editor-toolbar button:hover:not(:disabled),
+.toolbar-button:hover {
+  background: var(--accent);
+  color: #fff;
+}
+
+.editor-toolbar button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Code zoom controls — compact neutral buttons (override the accent toolbar
+   style via higher specificity). Only .content-body's font-size changes, so the
+   code text scales while sidebars and toolbars keep their fixed sizes. */
+.zoom-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.editor-toolbar .zoom-btn {
+  padding: 0.1rem 0.55rem;
+  font-size: 13px;
+  line-height: 1.5;
+  background: #e2e8f0;
+  border: 1px solid var(--border);
+  color: var(--text-h);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.editor-toolbar .zoom-btn:hover:not(:disabled) {
+  background: #cbd5e1;
+}
+
+.editor-toolbar .zoom-btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.zoom-level {
+  font-size: 12px;
+  min-width: 4ch;
+  text-align: center;
+  color: var(--text);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not(.theme-light) .editor-toolbar .zoom-btn {
+    background: #2d333b;
+  }
+
+  :root:not(.theme-light) .editor-toolbar .zoom-btn:hover:not(:disabled) {
+    background: #444c56;
+  }
+}
+
+.theme-dark .editor-toolbar .zoom-btn {
+  background: #2d333b;
+}
+
+.theme-dark .editor-toolbar .zoom-btn:hover:not(:disabled) {
+  background: #444c56;
+}
+
+/* Overlay editor: highlighted <pre> behind a transparent <textarea>.
+   Font metrics must stay identical to .file-content for alignment.
+   No soft-wrap in the editor (white-space: pre) so the line-number gutter
+   stays aligned; long lines scroll horizontally instead.
+
+   The textarea defines the editor box height (min-height, user-resizable).
+   The gutter is absolutely positioned against that box — if it were an
+   in-flow flex item its content height would stretch the shell past the
+   textarea and desynchronize the layers on scroll. */
+.editor-shell {
+  position: relative;
+}
+
+.editor-gutter {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  /* border-box so the width var equals the total box and matches .editor-wrap's margin */
+  box-sizing: border-box;
+  width: var(--gutter-w, calc(3 * 0.65em + 1.3rem));
+  font-family: var(--user-mono, var(--mono));
+  font-size: inherit;
+  line-height: inherit;
+  padding: 1rem 0.5rem 1rem 0.75rem;
+  margin: 0;
+  overflow: hidden;
+  background: var(--code-bg);
+  color: var(--text-h);
+  opacity: 0.45;
+  border: 1px solid var(--border);
+  border-right: none;
+  border-radius: 6px 0 0 6px;
+  white-space: pre;
+  text-align: right;
+  user-select: none;
+}
+
+.editor-wrap {
+  position: relative;
+  margin-left: var(--gutter-w, calc(3 * 0.62em + 1.3rem));
+}
+
+.editor-status {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  color: var(--text);
+  opacity: 0.75;
+  padding: 0.375rem 0.25rem 0;
+}
+
+.editor-highlight,
+.editor-input {
+  font-family: var(--user-mono, var(--mono));
+  font-size: inherit;
+  line-height: inherit;
+  padding: 1rem;
+  margin: 0;
+  border-radius: 6px;
+  white-space: pre;
+  box-sizing: border-box;
+  /* #root sets text-align: center (Vite template leftover); code must stay left */
+  text-align: left;
+}
+
+/* Word wrap on (settings): soft-wrap long lines in the editor. The gutter is hidden
+   in this mode (see FileEditor), so both overlay layers span the full shell width.
+   Both layers get identical wrapping, keeping highlight and textarea aligned. */
+.editor-wrap.editor-wrap-on .editor-highlight,
+.editor-wrap.editor-wrap-on .editor-input {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.editor-highlight {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  background: var(--code-bg);
+  color: var(--text-h);
+  border: 1px solid transparent;
+  pointer-events: none;
+}
+
+.editor-highlight,
+.editor-input {
+  border-radius: 0 6px 6px 0;
+}
+
+.editor-input {
+  position: relative;
+  display: block;
+  width: 100%;
+  min-height: 420px;
+  resize: vertical;
+  background: transparent;
+  color: transparent;
+  caret-color: var(--text-h);
+  border: 1px solid var(--border);
+  outline: none;
+}
+
+.editor-input:focus {
+  border-color: var(--accent-border);
+}
+
+.editor-input::selection {
+  background: rgba(170, 59, 255, 0.35);
+}
+
+/* Search match preview lines */
+.match-line {
+  display: flex;
+  gap: 0.5rem;
+  padding: 0.125rem 0.5rem 0.125rem 1.75rem;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text);
+}
+
+.match-no {
+  min-width: 3ch;
+  text-align: right;
+  opacity: 0.6;
+}
+
+.match-text {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Diff review view */
+.diff-view {
+  margin-top: 1rem;
+  border: 1px solid var(--border);
+  max-height: 70vh;
+  overflow: auto;
+  padding: 0;
+}
+
+.diff-summary {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem 1rem;
+  background: var(--code-bg);
+  border-bottom: 1px solid var(--border);
+  font-size: 13px;
+}
+
+.diff-count {
+  font-weight: 500;
+}
+
+.diff-count.added {
+  color: var(--tok-string);
+}
+
+.diff-count.removed {
+  color: var(--tok-variable);
+}
+
+.diff-hint {
+  font-size: 12px;
+  color: var(--text);
+}
+
+.diff-line {
+  display: grid;
+  grid-template-columns: 4ch 4ch 2ch 1fr;
+  line-height: 1.5;
+}
+
+.diff-line.added {
+  background: rgba(10, 125, 51, 0.1);
+}
+
+.diff-line.removed {
+  background: rgba(207, 34, 46, 0.1);
+}
+
+.diff-no {
+  padding: 0 0.5rem;
+  text-align: right;
+  opacity: 0.5;
+  user-select: none;
+}
+
+.diff-sign {
+  text-align: center;
+  user-select: none;
+}
+
+.diff-line.added .diff-sign {
+  color: var(--tok-string);
+  font-weight: 500;
+}
+
+.diff-line.removed .diff-sign {
+  color: var(--tok-variable);
+  font-weight: 500;
+}
+
+.diff-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not(.theme-light) .diff-line.added {
+    background: rgba(126, 231, 135, 0.1);
+  }
+
+  :root:not(.theme-light) .diff-line.removed {
+    background: rgba(255, 161, 152, 0.12);
+  }
+}
+
+.theme-dark .diff-line.added {
+  background: rgba(126, 231, 135, 0.1);
+}
+
+.theme-dark .diff-line.removed {
+  background: rgba(255, 161, 152, 0.12);
+}
+
+/* Terraform operations panel */
+.tf-panel {
+  margin-bottom: 1rem;
+}
+
+.tf-toolbar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+/* tfenv version selector */
+.tf-version-select {
+  padding: 0.3rem 0.4rem;
+  font-size: 13px;
+  background: #fff;
+  border: 1px solid var(--border);
+  color: var(--text-h);
+  border-radius: 4px;
+}
+
+.tf-version-note {
+  font-size: 12px;
+  opacity: 0.65;
+}
+
+.tf-label {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  opacity: 0.6;
+  margin-right: 0.25rem;
+}
+
+.tf-toolbar button {
+  padding: 0.3rem 0.8rem;
+  font-size: 13px;
+  background: #e2e8f0;
+  border: 1px solid var(--border);
+  color: var(--text-h);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.tf-toolbar button:hover:not(:disabled) {
+  background: #cbd5e1;
+}
+
+.tf-toolbar button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.tf-running,
+.tf-status {
+  font-size: 13px;
+  padding: 0.25rem 0.5rem;
+}
+
+.tf-status.ok {
+  color: var(--tok-string);
+}
+
+.tf-status.error {
+  color: #d64545;
+}
+
+.tf-changed-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+  margin-bottom: 0.5rem;
+}
+
+.tf-changed-list button {
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 0.2rem 0.6rem;
+  background: #e2e8f0;
+  border: 1px solid var(--border);
+  color: var(--text-h);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.tf-changed-list button.active {
+  background: var(--accent-bg);
+  border-color: var(--accent-border);
+  font-weight: 500;
+}
+
+.tf-diagnostics {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+}
+
+.tf-diagnostic {
+  display: flex;
+  gap: 0.625rem;
+  padding: 0.5rem 0.75rem;
+  border-radius: 4px;
+  font-size: 13px;
+  border: 1px solid var(--border);
+}
+
+.tf-diagnostic.error {
+  background: rgba(207, 34, 46, 0.08);
+}
+
+.tf-diagnostic.warning {
+  background: rgba(178, 106, 0, 0.08);
+}
+
+.tf-level {
+  font-weight: 600;
+  text-transform: uppercase;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  padding-top: 2px;
+}
+
+.tf-diagnostic.error .tf-level {
+  color: #d64545;
+}
+
+.tf-diagnostic.warning .tf-level {
+  color: #b26a00;
+}
+
+.tf-summary {
+  font-weight: 500;
+}
+
+.tf-detail {
+  font-family: var(--mono);
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0.25rem 0 0;
+  opacity: 0.85;
+}
+
+.tf-output {
+  font-family: var(--mono);
+  font-size: 13px;
+  background: var(--code-bg);
+  color: var(--text-h);
+  padding: 1rem;
+  border-radius: 6px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 60vh;
+  overflow: auto;
+  margin: 0.5rem 0 0;
+}
+
+/* Log view — the content area becomes a flex column so the panel fills it and
+   the live log scrolls internally instead of pushing the code down. */
+.content-body.tf-log-mode {
+  display: flex;
+  flex-direction: column;
+}
+
+.tf-panel.log-only {
+  flex: 1;
+  min-height: 0;
+  margin-bottom: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.tf-panel.log-only .tf-toolbar,
+.tf-panel.log-only .tf-running,
+.tf-panel.log-only .tf-status {
+  flex-shrink: 0;
+}
+
+.tf-log-view {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Live command log — fills the remaining height (overrides .tf-output's cap). */
+.tf-live-log {
+  flex: 1;
+  min-height: 0;
+  max-height: none;
+}
+
+/* Action row under the live log reuses the toolbar button styling. */
+.tf-actions {
+  margin-top: 0.5rem;
+  flex-shrink: 0;
+}
+
+/* Active state for the Log toggle button (kept on hover too). */
+.tf-toolbar button.active,
+.tf-toolbar button.active:hover:not(:disabled) {
+  background: var(--accent);
+  border-color: var(--accent-border);
+  color: #fff;
+}
+
+/* Toolbar separator between the command and inspect groups */
+.tf-toolbar-sep {
+  width: 1px;
+  height: 1.25rem;
+  background: var(--border);
+  margin: 0 0.25rem;
+}
+
+/* Danger button for the guarded apply flow */
+.tf-panel button.danger {
+  background: #d64545;
+  border: 1px solid #b23030;
+  color: #fff;
+  font-weight: 600;
+  padding: 0.3rem 0.8rem;
+  font-size: 13px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.tf-panel button.danger:hover:not(:disabled) {
+  background: #c03a3a;
+}
+
+/* Structured plan summary chips */
+.tf-plan-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-bottom: 0.5rem;
+}
+
+.tf-chip {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 0.15rem 0.6rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+}
+
+.tf-chip.add {
+  color: #1a7f37;
+  background: rgba(26, 127, 55, 0.1);
+}
+
+.tf-chip.update {
+  color: #b26a00;
+  background: rgba(178, 106, 0, 0.1);
+}
+
+.tf-chip.replace {
+  color: #8250df;
+  background: rgba(130, 80, 223, 0.1);
+}
+
+.tf-chip.destroy {
+  color: #d64545;
+  background: rgba(214, 69, 69, 0.1);
+}
+
+/* Per-resource plan change list */
+.tf-resource-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 0.5rem;
+  max-height: 30vh;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.tf-resource-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.2rem 0.6rem;
+  font-size: 13px;
+}
+
+.tf-resource-row code {
+  font-family: var(--mono);
+  font-size: 12px;
+  word-break: break-all;
+}
+
+/* Plan deep-dive: expandable per-resource attribute diff. Uses theme variables,
+   so no separate dark-mode rules are needed. */
+.tf-resource-row.expandable {
+  cursor: pointer;
+}
+
+.tf-attr-caret {
+  margin-left: auto;
+  flex-shrink: 0;
+  font-size: 10px;
+  color: var(--text);
+  opacity: 0.75;
+}
+
+.tf-resource-changes {
+  margin: 0.2rem 0.4rem 0.4rem;
+  padding-left: 0.6rem;
+  border-left: 2px solid var(--border);
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.tf-attr-row {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.tf-attr-path {
+  color: var(--text-h);
+}
+
+.tf-attr-before {
+  color: var(--text);
+  opacity: 0.8;
+  word-break: break-all;
+}
+
+.tf-attr-arrow {
+  flex-shrink: 0;
+  color: var(--accent);
+}
+
+.tf-attr-after {
+  color: var(--text-h);
+  word-break: break-all;
+}
+
+.tf-attr-after.unknown {
+  font-style: italic;
+  opacity: 0.7;
+}
+
+.tf-action {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  padding: 0.1rem 0.45rem;
+  border-radius: 3px;
+}
+
+.tf-action.create {
+  color: #1a7f37;
+  background: rgba(26, 127, 55, 0.12);
+}
+
+.tf-action.update {
+  color: #b26a00;
+  background: rgba(178, 106, 0, 0.12);
+}
+
+.tf-action.replace {
+  color: #8250df;
+  background: rgba(130, 80, 223, 0.12);
+}
+
+.tf-action.destroy {
+  color: #d64545;
+  background: rgba(214, 69, 69, 0.12);
+}
+
+/* Output values from state */
+.tf-outputs-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  margin-bottom: 0.5rem;
+}
+
+.tf-output-row {
+  display: flex;
+  gap: 0.75rem;
+  align-items: baseline;
+  font-size: 13px;
+}
+
+.tf-output-row code {
+  font-family: var(--mono);
+  font-size: 12px;
+  flex-shrink: 0;
+}
+
+.tf-output-value {
+  font-family: var(--mono);
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  opacity: 0.85;
+}
+
+/* Resource addresses in state */
+.tf-state-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 0.5rem;
+  max-height: 30vh;
+  overflow: auto;
+}
+
+.tf-state-list button {
+  font-family: var(--mono);
+  font-size: 12px;
+  text-align: left;
+  padding: 0.25rem 0.6rem;
+  background: #e2e8f0;
+  border: 1px solid var(--border);
+  color: var(--text-h);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.tf-state-list button:hover {
+  background: #cbd5e1;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not(.theme-light) .tf-toolbar button,
+  :root:not(.theme-light) .tf-changed-list button,
+  :root:not(.theme-light) .tf-state-list button {
+    background: #2d333b;
+  }
+
+  :root:not(.theme-light) .tf-toolbar button:hover:not(:disabled),
+  :root:not(.theme-light) .tf-changed-list button.active,
+  :root:not(.theme-light) .tf-state-list button:hover {
+    background: #444c56;
+  }
+
+  :root:not(.theme-light) .tf-version-select {
+    background: #2d333b;
+  }
+}
+
+.theme-dark .tf-toolbar button,
+.theme-dark .tf-changed-list button,
+.theme-dark .tf-state-list button {
+  background: #2d333b;
+}
+
+.theme-dark .tf-toolbar button:hover:not(:disabled),
+.theme-dark .tf-changed-list button.active,
+.theme-dark .tf-state-list button:hover {
+  background: #444c56;
+}
+
+.theme-dark .tf-version-select {
+  background: #2d333b;
+}
+
+/* --- Terraform project picker, state bar and console ------------------------
+   These rules use theme variables only, so they follow the active theme (OS or
+   forced) without extra dark-mode overrides. */
+
+/* Project folder chip in the TF toolbar row 1 */
+.tf-project-chip {
+  font-family: var(--mono);
+  font-size: 12px;
+  background: var(--code-bg);
+}
+
+/* Dashed border while following the open file's folder (not a loaded project) */
+.tf-project-chip.follows {
+  border-style: dashed;
+}
+
+.tf-chip-clear {
+  padding: 0.3rem 0.5rem;
+  font-size: 14px;
+  line-height: 1;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.tf-chip-clear:hover {
+  color: var(--text-h);
+}
+
+.tf-toolbar-spacer {
+  flex: 1;
+}
+
+/* Init options: -upgrade checkbox + remote backend config pairs */
+.tf-init-options {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.625rem 0.75rem;
+  margin-bottom: 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--code-bg);
+}
+
+.tf-opt-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 13px;
+  color: var(--text-h);
+  cursor: pointer;
+}
+
+.tf-opt-label {
+  font-size: 12px;
+  opacity: 0.75;
+}
+
+.tf-bc-block {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+}
+
+.tf-bc-row {
+  display: flex;
+  gap: 0.375rem;
+}
+
+.tf-bc-row input {
+  flex: 1;
+  min-width: 0;
+  padding: 0.25rem 0.5rem;
+  font-family: var(--mono);
+  font-size: 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text-h);
+  border-radius: 4px;
+}
+
+.tf-bc-row button {
+  padding: 0.25rem 0.6rem;
+  font-size: 13px;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.tf-bc-row button:hover:not(:disabled) {
+  color: var(--text-h);
+}
+
+.tf-bc-add {
+  align-self: flex-start;
+  padding: 0.25rem 0.6rem;
+  font-size: 12px;
+  background: transparent;
+  border: 1px dashed var(--border);
+  color: var(--text);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.tf-bc-add:hover {
+  color: var(--text-h);
+  border-color: var(--accent-border);
+}
+
+/* Cloud credentials (encrypted per-project store) */
+.tf-creds {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.625rem 0.75rem;
+  margin-bottom: 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--code-bg);
+}
+
+.tf-creds-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.tf-creds-status,
+.tf-creds-form {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.tf-creds-row {
+  display: flex;
+  gap: 0.375rem;
+}
+
+.tf-creds-row input {
+  flex: 1;
+  min-width: 0;
+  padding: 0.25rem 0.5rem;
+  font-family: var(--mono);
+  font-size: 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text-h);
+  border-radius: 4px;
+}
+
+.tf-creds-row button {
+  padding: 0.25rem 0.6rem;
+  font-size: 13px;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.tf-creds-row button:hover:not(:disabled) {
+  color: var(--text-h);
+}
+
+.tf-cred-block {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+  margin: 0;
+  padding: 0.5rem 0.625rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.tf-cred-block.removed {
+  opacity: 0.55;
+}
+
+.tf-cred-block legend {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-h);
+  padding: 0 0.375rem;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.tf-cred-remove {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.tf-cred-block input,
+.tf-cred-block textarea {
+  padding: 0.25rem 0.5rem;
+  font-family: var(--mono);
+  font-size: 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text-h);
+  border-radius: 4px;
+}
+
+.tf-cred-block textarea {
+  resize: vertical;
+  min-height: 3.5rem;
+}
+
+/* Cloud login panel (Login button in the Terraform toolbar) */
+.cloud-login-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+}
+
+.cloud-login-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.cloud-login-identity {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text);
+}
+
+.cloud-login-row button {
+  padding: 0.25rem 0.6rem;
+  font-size: 13px;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.cloud-login-row button:hover:not(:disabled) {
+  color: var(--text-h);
+  border-color: var(--accent-border);
+}
+
+.cloud-login-feedback {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+/* The settings drawer keeps a hardcoded light background in both OS themes, so
+   the credentials card inside it uses explicit light colors (theme variables
+   would flip to dark-mode values and render invisible on white). */
+.settings-drawer .tf-creds {
+  background: #f6f8fa;
+  border-color: #d0d7de;
+  color: #24292f; /* cascades to chips, labels and status text that inherit */
+}
+
+.settings-drawer .tf-chip {
+  background: #fff;
+  border-color: #d0d7de;
+}
+
+.settings-drawer .tf-cred-block legend {
+  color: #57606a;
+}
+
+.settings-drawer .tf-status.ok {
+  color: #1a7f37;
+}
+
+.settings-drawer .tf-cred-block,
+.settings-drawer .tf-creds-row input,
+.settings-drawer .tf-cred-block input,
+.settings-drawer .tf-cred-block textarea {
+  background: #fff;
+  color: #24292f;
+  border-color: #d0d7de;
+}
+
+.settings-drawer .tf-creds-row button,
+.settings-drawer .cloud-login-row button {
+  color: #24292f;
+  border-color: #d0d7de;
+}
+
+.settings-drawer .tf-creds-row button:hover:not(:disabled) {
+  color: #57606a;
+}
+
+/* State bar: backend badge + workspace / var-file selects */
+.tf-state-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.tf-backend-badge {
+  font-size: 12px;
+  padding: 0.2rem 0.6rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--code-bg);
+  color: var(--text-h);
+}
+
+.tf-backend-badge.local,
+.tf-backend-badge.remote {
+  border-color: var(--accent-border);
+  background: var(--accent-bg);
+}
+
+.tf-backend-badge.remote {
+  font-weight: 500;
+}
+
+.tf-backend-badge.none {
+  opacity: 0.7;
+}
+
+.tf-ws-label,
+.tf-vf-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  font-size: 12px;
+  color: var(--text);
+}
+
+.tf-ws-label select,
+.tf-vf-label select {
+  padding: 0.2rem 0.4rem;
+  font-family: var(--mono);
+  font-size: 12px;
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  color: var(--text-h);
+  border-radius: 4px;
+}
+
+/* Console expression evaluator */
+.tf-console {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.625rem 0.75rem;
+  margin-bottom: 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--code-bg);
+}
+
+.tf-console-form {
+  display: flex;
+  gap: 0.375rem;
+}
+
+.tf-console-form input {
+  flex: 1;
+  min-width: 0;
+  padding: 0.3rem 0.5rem;
+  font-family: var(--mono);
+  font-size: 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text-h);
+  border-radius: 4px;
+}
+
+.tf-console-form button {
+  padding: 0.3rem 0.8rem;
+  font-size: 13px;
+  background: var(--accent-bg);
+  border: 1px solid var(--accent-border);
+  color: var(--text-h);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.tf-console-form button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.tf-console-entry code {
+  font-size: 12px;
+  color: var(--text-h);
+}
+
+.tf-console-out {
+  margin: 0.25rem 0 0;
+  padding: 0.375rem 0.5rem;
+  font-family: var(--mono);
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-h);
+}
+
+.tf-console-out.error {
+  color: #d64545;
+}
+
+/* State list rows with per-resource mv/rm actions. The buttons keep the list
+   item background (theme-aware) and only shrink to fit the row. */
+.tf-state-row {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+}
+
+.tf-state-row > button:first-child {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tf-state-actions {
+  display: inline-flex;
+  gap: 2px;
+  flex-shrink: 0;
+}
+
+/* Drift status row: badge (click to re-check) + auto-check interval */
+.tf-drift-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 0.5rem;
+}
+
+.tf-drift-badge {
+  font-size: 12px;
+  padding: 0.2rem 0.6rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--code-bg);
+  color: var(--text-h);
+  cursor: pointer;
+}
+
+.tf-drift-badge:hover:not(:disabled) {
+  border-color: var(--accent-border);
+}
+
+.tf-drift-badge:disabled {
+  opacity: 0.7;
+  cursor: default;
+}
+
+.tf-drift-badge.ok {
+  border-color: var(--tok-string);
+  color: var(--tok-string);
+}
+
+.tf-drift-badge.drifted,
+.tf-drift-badge.error {
+  border-color: #d64545;
+  color: #d64545;
+}
+
+/* Dependency graph view (terraform graph) */
+.tf-graph-section {
+  margin-bottom: 0.5rem;
+}
+
+.tf-graph {
+  display: flex;
+  flex-direction: column;
+  gap: 0.375rem;
+  padding: 0.625rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--code-bg);
+}
+
+.tf-graph-svg {
+  width: 100%;
+  height: 420px;
+  cursor: grab;
+  touch-action: none;
+  user-select: none;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.tf-graph-svg:active {
+  cursor: grabbing;
+}
+
+.tf-graph-edge {
+  stroke: var(--text-h);
+  opacity: 0.35;
+  stroke-width: 1.2;
+}
+
+.tf-graph-node rect {
+  fill: var(--code-bg);
+  stroke: var(--border);
+  stroke-width: 1;
+}
+
+.tf-graph-node text {
+  font-family: var(--mono);
+  font-size: 11px;
+  fill: var(--text-h);
+  text-anchor: middle;
+  pointer-events: none;
+}
+
+.tf-graph-node {
+  cursor: pointer;
+}
+
+.tf-graph-node:hover rect {
+  stroke: var(--accent-border);
+}
+
+.tf-graph-node.selected rect {
+  stroke: var(--accent-border);
+  stroke-width: 2;
+}
+
+.tf-graph-footer {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  font-size: 12px;
+  color: var(--text);
+}
+
+.tf-graph-hint {
+  opacity: 0.7;
+}
+
+.tf-graph-detail code {
+  font-size: 12px;
+  color: var(--text-h);
+}
+
+/* Module registry browser */
+.tf-registry {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.625rem 0.75rem;
+  margin-bottom: 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--code-bg);
+}
+
+.tf-registry-picks {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.375rem;
+}
+
+.tf-registry-picks button {
+  padding: 0.2rem 0.5rem;
+  font-family: var(--mono);
+  font-size: 11px;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.tf-registry-picks button:hover:not(:disabled) {
+  color: var(--text-h);
+  border-color: var(--accent-border);
+}
+
+.tf-registry-result {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.tf-registry-source {
+  margin: 0;
+  font-size: 12px;
+}
+
+.tf-registry-source code {
+  font-size: 12px;
+  color: var(--text-h);
+}
+
+.tf-registry-desc {
+  margin: 0;
+  font-size: 12px;
+  color: var(--text);
+  opacity: 0.85;
+}
+
+/* Cost estimation (infracost) */
+.tf-cost {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.625rem 0.75rem;
+  margin-bottom: 0.5rem;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--code-bg);
+}
+
+.tf-cost-total {
+  margin: 0;
+  font-size: 13px;
+  color: var(--text-h);
+}
+
+.tf-cost-notes {
+  margin: 0;
+  padding-left: 1.25rem;
+  font-size: 12px;
+  color: #d64545;
+}
+
+.tf-cost-notes.warn {
+  color: var(--tok-string);
+}
+
+.tf-cost-output {
+  margin: 0;
+  padding: 0.5rem 0.75rem;
+  max-height: 180px;
+  overflow: auto;
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: pre-wrap;
+  word-break: break-word;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--code-bg);
+  color: var(--text-h);
+}
+
+.tf-cost-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.tf-cost-table th,
+.tf-cost-table td {
+  padding: 0.3rem 0.5rem;
+  border-top: 1px solid var(--border);
+  text-align: left;
+}
+
+.tf-cost-table code {
+  font-size: 12px;
+  color: var(--text-h);
+}
+
+.tf-cost-table .num {
+  text-align: right;
+  font-family: var(--mono);
+  white-space: nowrap;
+}
+
+/* Higher specificity than .tf-panel button.danger so both actions stay small */
+.tf-state-list .tf-state-actions button,
+.tf-state-list .tf-state-actions button.danger {
+  padding: 0.1rem 0.45rem;
+  font-size: 11px;
+}
+
+/* terraform show output (saved plan review) — capped like the live log */
+.tf-show-plan {
+  max-height: 40vh;
+  overflow: auto;
+}
+
+/* --- Terraform project folder picker ---------------------------------------- */
+.tf-picker-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: rgba(8, 6, 13, 0.45);
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding-top: 10vh;
+}
+
+.tf-picker {
+  width: min(680px, 92vw);
+  max-height: 75vh;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+
+.tf-picker h3 {
+  margin: 0;
+  padding: 0.75rem 1rem 0.25rem;
+  font-size: 15px;
+  color: var(--text-h);
+}
+
+.tf-picker-hint {
+  margin: 0 0 0.625rem;
+  padding: 0 1rem;
+  font-size: 12px;
+  color: var(--text);
+}
+
+.tf-picker-recent {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.375rem;
+  padding: 0 1rem 0.625rem;
+}
+
+.tf-picker-recent button {
+  font-family: var(--mono);
+  font-size: 12px;
+  padding: 0.2rem 0.6rem;
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  color: var(--text-h);
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.tf-picker-recent button:hover {
+  border-color: var(--accent-border);
+}
+
+.tf-picker-breadcrumb {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.125rem;
+  padding: 0 1rem 0.5rem;
+  font-size: 12px;
+}
+
+.tf-picker-breadcrumb button {
+  padding: 0.1rem 0.3rem;
+  font-family: var(--mono);
+  font-size: 12px;
+  background: transparent;
+  border: none;
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.tf-picker-breadcrumb button:hover {
+  text-decoration: underline;
+}
+
+.tf-picker-sep {
+  color: var(--text);
+  opacity: 0.6;
+}
+
+.tf-picker-list {
+  flex: 1;
+  min-height: 8rem;
+  max-height: 34vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 0.25rem 1rem;
+}
+
+.tf-picker-list button {
+  text-align: left;
+  font-family: var(--mono);
+  font-size: 13px;
+  padding: 0.375rem 0.6rem;
+  background: transparent;
+  border: none;
+  color: var(--text-h);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.tf-picker-list button:hover {
+  background: var(--accent-bg);
+}
+
+/* "Open this folder" affordance after an access-denied error */
+.tf-picker-list .tf-picker-status.error + button {
+  align-self: flex-start;
+  margin-top: 0.25rem;
+  background: var(--accent-bg);
+  border: 1px solid var(--accent-border);
+}
+
+.tf-picker-status {
+  padding: 0.5rem 0.6rem;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.tf-picker-status.error {
+  color: #d64545;
+}
+
+.tf-picker-form {
+  display: flex;
+  gap: 0.375rem;
+  padding: 0.625rem 1rem;
+  border-top: 1px solid var(--border);
+}
+
+.tf-picker-form input {
+  flex: 1;
+  min-width: 0;
+  padding: 0.4rem 0.6rem;
+  font-family: var(--mono);
+  font-size: 13px;
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  color: var(--text-h);
+  border-radius: 4px;
+}
+
+.tf-picker-form button {
+  padding: 0.4rem 1rem;
+  font-size: 13px;
+  background: var(--accent-bg);
+  border: 1px solid var(--accent-border);
+  color: var(--text-h);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.tf-picker-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  padding: 0.625rem 1rem;
+  border-top: 1px solid var(--border);
+}
+
+.tf-picker-actions button {
+  padding: 0.4rem 1rem;
+  font-size: 13px;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-h);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.tf-picker-actions button:first-child {
+  background: var(--accent-bg);
+  border-color: var(--accent-border);
+}
+
+.tf-picker-actions button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* Git status badges in the tree (M modified / U untracked / D deleted / R renamed) */
+.git-badges {
+  display: inline-flex;
+  gap: 2px;
+}
+
+.git-badge {
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.5;
+  padding: 0 4px;
+  border-radius: 3px;
+  user-select: none;
+}
+
+.git-badge.git-m {
+  color: #b26a00;
+  background: rgba(178, 106, 0, 0.12);
+}
+
+.git-badge.git-u {
+  color: #0a7d33;
+  background: rgba(10, 125, 51, 0.12);
+}
+
+.git-badge.git-d {
+  color: #cf222e;
+  background: rgba(207, 34, 46, 0.12);
+}
+
+.git-badge.git-r {
+  color: #155eec;
+  background: rgba(21, 94, 236, 0.12);
+}
+
+.git-badge.git-other {
+  color: var(--text-h);
+  opacity: 0.7;
+  background: rgba(128, 128, 128, 0.15);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not(.theme-light) .git-badge.git-m {
+    color: #ffa657;
+  }
+
+  :root:not(.theme-light) .git-badge.git-u {
+    color: #7ee787;
+  }
+
+  :root:not(.theme-light) .git-badge.git-d {
+    color: #ffa198;
+  }
+
+  :root:not(.theme-light) .git-badge.git-r {
+    color: #79c0ff;
+  }
+}
+
+.theme-dark .git-badge.git-m {
+  color: #ffa657;
+}
+
+.theme-dark .git-badge.git-u {
+  color: #7ee787;
+}
+
+.theme-dark .git-badge.git-d {
+  color: #ffa198;
+}
+
+.theme-dark .git-badge.git-r {
+  color: #79c0ff;
+}
+
+/* Git panel (lives in the dedicated right-hand .git-sidebar) */
+.git-panel {
+  margin-top: 1rem;
+  padding: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #fff;
+}
+
+.git-summary {
+  font-size: 12px;
+  color: var(--text);
+  margin-bottom: 0.5rem;
+}
+
+.git-commit-msg {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.4rem 0.5rem;
+  font-size: 13px;
+  font-family: inherit;
+  color: var(--text-h);
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  resize: vertical;
+  margin-bottom: 0.5rem;
+}
+
+.git-panel button {
+  width: 100%;
+  padding: 0.4rem 0.8rem;
+  font-size: 13px;
+  background: #1b2040;
+  border: none;
+  color: #fff;
+  border-radius: 6px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+  cursor: pointer;
+}
+
+.git-panel button:hover:not(:disabled) {
+  background: #2d3460;
+}
+
+.git-panel button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* Commit action — compact, sits directly under the message field (its spacing
+   comes from .git-commit-msg's margin-bottom). */
+.git-commit-btn {
+  width: auto;
+  display: inline-block;
+  padding: 0.3rem 0.85rem;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+/* Selective commit — per-file selection list above the message field */
+.git-changed-files {
+  margin-bottom: 0.5rem;
+}
+
+.git-changed-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-h);
+  margin-bottom: 0.3rem;
+}
+
+.git-changed-list {
+  max-height: 20vh;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: #fff;
+  padding: 0.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.git-file-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  padding: 2px 4px;
+  border-radius: 4px;
+  cursor: pointer;
+  min-width: 0;
+}
+
+.git-file-row:hover {
+  background: #f3f4f6;
+}
+
+.git-file-row input[type='checkbox'] {
+  margin: 0;
+  flex-shrink: 0;
+}
+
+.git-file-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.git-warn {
+  color: #b26a00;
+}
+
+.git-status {
+  font-size: 13px;
+  margin-top: 0.5rem;
+}
+
+.git-status.ok {
+  color: #0a7d33;
+}
+
+.git-status.error {
+  color: #d64545;
+}
+
+/* Git panel sections (branch / remotes / sync / merge / rebase / commit) */
+.git-section-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-h);
+  opacity: 0.75;
+  margin: 0.9rem 0 0.35rem;
+}
+
+.git-panel > .git-section-title:first-child {
+  margin-top: 0;
+}
+
+.git-note {
+  font-size: 12px;
+  color: var(--text-h);
+  opacity: 0.8;
+  margin: 0 0 0.5rem;
+}
+
+.git-field-label {
+  display: block;
+  font-size: 11px;
+  color: var(--text-h);
+  opacity: 0.8;
+  margin: 0.4rem 0 0.2rem;
+}
+
+.git-input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.35rem 0.5rem;
+  font-size: 13px;
+  font-family: inherit;
+  color: var(--text-h);
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.git-branch-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 0.35rem;
+}
+
+.git-branch-row .git-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.git-branch-row button {
+  width: auto;
+  white-space: nowrap;
+}
+
+.git-mini-btn {
+  padding: 0.3rem 0.6rem !important;
+  font-size: 12px !important;
+}
+
+.git-remote-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 0.35rem;
+  min-width: 0;
+}
+
+.git-remote-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-h);
+  flex-shrink: 0;
+}
+
+.git-remote-url {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-h);
+  opacity: 0.75;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+
+.git-platform {
+  flex-shrink: 0;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 999px;
+  text-decoration: none;
+  color: #fff;
+}
+
+.git-platform.github {
+  background: #24292f;
+}
+
+.git-platform.gitlab {
+  background: #fc6d26;
+}
+
+.git-btn-row {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 0.35rem;
+}
+
+.git-btn-row button {
+  flex: 1;
+  width: auto;
+}
+
+.git-danger {
+  background: #fdecec !important;
+  border-color: #d64545 !important;
+  color: #cf222e !important;
+}
+
+.git-op-output {
+  margin-top: 0.5rem;
+  padding: 0.5rem 0.6rem;
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-h);
+  background: #f6f8fa;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  max-height: 200px;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not(.theme-light) .git-panel {
+    background: transparent;
+  }
+
+  :root:not(.theme-light) .git-commit-msg {
+    background: #2d333b;
+  }
+
+  :root:not(.theme-light) .git-changed-list {
+    background: #2d333b;
+  }
+
+  /* Rows inherit the sidebar's forced dark text (#24292f); on the now-dark list
+     box that is unreadable, so pin a light color (matches .git-commit-msg). */
+  :root:not(.theme-light) .git-file-row {
+    color: var(--text-h);
+  }
+
+  :root:not(.theme-light) .git-file-row:hover {
+    background: #373e47;
+  }
+
+  :root:not(.theme-light) .git-warn {
+    color: #ffa657;
+  }
+
+  :root:not(.theme-light) .git-status.ok {
+    color: #7ee787;
+  }
+}
+
+.theme-dark .git-panel {
+  background: transparent;
+}
+
+.theme-dark .git-commit-msg {
+  background: #2d333b;
+}
+
+.theme-dark .git-changed-list {
+  background: #2d333b;
+}
+
+/* Rows inherit the sidebar's forced dark text (#24292f); on the now-dark list
+   box that is unreadable, so pin a light color (matches .git-commit-msg). */
+.theme-dark .git-file-row {
+  color: var(--text-h);
+}
+
+.theme-dark .git-file-row:hover {
+  background: #373e47;
+}
+
+.theme-dark .git-warn {
+  color: #ffa657;
+}
+
+.theme-dark .git-status.ok {
+  color: #7ee787;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not(.theme-light) .git-input {
+    background: #2d333b;
+  }
+
+  :root:not(.theme-light) .git-op-output {
+    background: #1c2128;
+  }
+
+  :root:not(.theme-light) .git-danger {
+    background: rgba(207, 34, 46, 0.15) !important;
+    color: #ffa198 !important;
+  }
+}
+
+.theme-dark .git-input {
+  background: #2d333b;
+}
+
+.theme-dark .git-op-output {
+  background: #1c2128;
+}
+
+.theme-dark .git-danger {
+  background: rgba(207, 34, 46, 0.15) !important;
+  color: #ffa198 !important;
+}
+
+/* ===== Multi-tab editor (Step 4) — main area, uses theme vars ===== */
+.tab-bar {
+  display: flex;
+  align-items: stretch;
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+  margin-bottom: 0.75rem;
+}
+
+.tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.45rem 0.6rem 0.45rem 0.85rem;
+  font-size: 13px;
+  color: var(--text);
+  background: transparent;
+  border-right: 1px solid var(--border);
+  cursor: pointer;
+  white-space: nowrap;
+  max-width: 240px;
+}
+
+.tab:hover {
+  background: var(--code-bg);
+}
+
+.tab.active {
+  color: var(--text-h);
+  background: var(--code-bg);
+  box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+.tab-name {
+  font-family: var(--mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 170px;
+}
+
+.tab-dirty {
+  color: var(--accent);
+  font-size: 10px;
+  line-height: 1;
+}
+
+.tab-close {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  color: inherit;
+  padding: 0 2px;
+  margin-left: 0.15rem;
+  font-size: 14px;
+  line-height: 1;
+  opacity: 0.55;
+}
+
+.tab-close:hover {
+  opacity: 1;
+  color: var(--text-h);
+}
+
+/* ===== Commit history + commit diff (Step 2) — main area, uses theme vars ===== */
+.commit-view {
+  min-height: 100%;
+}
+
+.commit-header {
+  margin-bottom: 0.5rem;
+}
+
+.commit-meta {
+  display: flex;
+  gap: 1rem;
+  font-size: 13px;
+  color: var(--text);
+  padding: 0.4rem 0 0.6rem;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 0.75rem;
+}
+
+.commit-file {
+  margin-top: 1rem;
+}
+
+.commit-file-head {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.3rem 0.5rem;
+  background: var(--code-bg);
+  border: 1px solid var(--border);
+  border-bottom: none;
+  border-radius: 6px 6px 0 0;
+}
+
+.commit-file-path {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-h);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Attach the per-file diff directly under its header to form one card. */
+.commit-file .diff-view {
+  margin-top: 0;
+  border-radius: 0 0 6px 6px;
+}
+
+.commit-status {
+  font-family: var(--mono);
+  font-size: 10px;
+  font-weight: 600;
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.commit-a { color: #0a7d33; background: rgba(10, 125, 51, 0.1); }
+.commit-m { color: #b26a00; background: rgba(178, 106, 0, 0.1); }
+.commit-d { color: #cf222e; background: rgba(207, 34, 46, 0.1); }
+.commit-r { color: #aa3bff; background: rgba(170, 59, 255, 0.1); }
+.commit-c { color: #0a7d33; background: rgba(10, 125, 51, 0.1); }
+.commit-t { color: var(--text-h); opacity: 0.8; background: rgba(128, 128, 128, 0.15); }
+
+@media (prefers-color-scheme: dark) {
+  :root:not(.theme-light) .commit-a,
+  :root:not(.theme-light) .commit-c { color: #7ee787; }
+  :root:not(.theme-light) .commit-m { color: #ffa657; }
+  :root:not(.theme-light) .commit-d { color: #ffa198; }
+  :root:not(.theme-light) .commit-r { color: #c084fc; }
+}
+
+.theme-dark .commit-a,
+.theme-dark .commit-c { color: #7ee787; }
+.theme-dark .commit-m { color: #ffa657; }
+.theme-dark .commit-d { color: #ffa198; }
+.theme-dark .commit-r { color: #c084fc; }
+
+/* History controls — quantity select + revision search, above the commit list. */
+.git-history-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 0.35rem;
+}
+
+.git-limit-select {
+  width: auto;
+  min-width: 64px;
+  flex-shrink: 0;
+}
+
+.git-rev-search {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Direct "open revision" action for a hash not in the loaded window. */
+.git-jump-btn {
+  margin-bottom: 0.35rem;
+  font-weight: 600;
+}
+
+/* ===== Git history rows (sidebar) — explicit colors, theme-safe on the light panel ===== */
+.git-history {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+/* The commit list is bounded so it shows a comfortable number of revisions and
+   scrolls internally when there are more — keeping the sections below (Sync/Merge/
+   Rebase/Commit) reachable. The whole sidebar also scrolls as a fallback, so the
+   Commit button stays visible/clickable regardless of how many revisions load. */
+.git-sidebar .git-history {
+  max-height: 40vh;
+  overflow-y: auto;
+}
+
+.git-commit-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.4rem 0.6rem;
+  font-size: 13px;
+  text-align: left;
+  background: #e2e8f0;
+  border: 1px solid var(--border);
+  color: #24292f;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.git-commit-row:hover:not(.active) {
+  background: #cbd5e1;
+}
+
+.git-commit-row.active {
+  background: #24292f;
+  color: #fff;
+  border-color: #24292f;
+}
+
+.git-commit-hash {
+  font-family: var(--mono);
+  font-size: 11px;
+  opacity: 0.75;
+  flex-shrink: 0;
+}
+
+.git-commit-subject {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ===== Search filters + replace bar (sidebar) — explicit colors, theme-safe ===== */
+.filter-toggle {
+  padding: 0.3rem 0.6rem;
+  font-size: 12px;
+  font-family: var(--mono);
+  background: #e2e8f0;
+  border: 1px solid var(--border);
+  color: #24292f;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.filter-toggle:hover {
+  background: #cbd5e1;
+}
+
+.filter-toggle.active {
+  background: #24292f;
+  color: #fff;
+  border-color: #24292f;
+}
+
+.ext-input {
+  flex: 1;
+  padding: 0.35rem 0.5rem;
+  font-size: 13px;
+  background: #fff;
+  color: #24292f;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.ext-input::placeholder {
+  color: #6b7280;
+}
+
+.replace-bar {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.replace-bar input {
+  flex: 1;
+  padding: 0.4rem 0.6rem;
+  font-size: 13px;
+  background: #fff;
+  color: #24292f;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.replace-bar input::placeholder {
+  color: #6b7280;
+}
+
+.replace-bar button {
+  padding: 0.4rem 0.8rem;
+  font-size: 13px;
+  background: #1b2040;
+  border: none;
+  color: #fff;
+  border-radius: 6px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+  cursor: pointer;
+}
+
+.replace-bar button:hover:not(:disabled) {
+  background: #2d3460;
+}
+
+.replace-bar button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* ===== Allowed roots management (sidebar) — explicit colors, theme-safe ===== */
+.roots-section {
+  margin-bottom: 0.75rem;
+}
+
+.root-row {
+  cursor: default;
+}
+
+.root-row .file-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.root-remove {
+  margin-left: auto;
+  background: #1b2040;
+  border: none;
+  color: #fff;
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 1;
+  padding: 0 4px;
+  border-radius: 6px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+  opacity: 0.5;
+}
+
+.root-remove:hover:not(:disabled) {
+  background: #2d3460;
+  opacity: 1;
+}
+
+.root-remove:disabled {
+  opacity: 0.3;
+  cursor: default;
+}
+
+/* Settings drawer — footer of the left sidebar. The sidebar keeps a hardcoded
+   light background in both OS themes, so controls use explicit colors here. */
+.settings-toggle {
+  margin-top: auto; /* pin to the bottom when the tree is short */
+  width: 100%;
+  padding: 0.4rem 0.6rem;
+  font-size: 12px;
+  font-weight: 600;
+  color: #fff;
+  background: #1b2040;
+  border: none;
+  border-radius: 6px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+  cursor: pointer;
+}
+
+.settings-toggle:hover {
+  background: #2d3460;
+}
+
+.settings-drawer {
+  margin-top: 0.5rem;
+  padding: 0.6rem;
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  background: #fff;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  color: #24292f;
+}
+
+.settings-row input[type='range'] {
+  flex: 1;
+  min-width: 0;
+}
+
+.settings-value {
+  margin-top: -0.2rem;
+  font-size: 11px;
+  color: #57606a;
+  text-align: right;
+}
+
+.settings-check {
+  cursor: pointer;
+}
+
+.settings-check input {
+  margin: 0;
+}
+
+.settings-col {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.25rem;
+}
+
+.settings-col select {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.3rem 0.4rem;
+  font-size: 12px;
+  color: #24292f;
+  background: #fff;
+  border: 1px solid #d0d7de;
+  border-radius: 4px;
+}
+
+.settings-reset {
+  padding: 0.35rem 0.6rem;
+  font-size: 12px;
+  font-weight: 600;
+  color: #fff;
+  background: #1b2040;
+  border: none;
+  border-radius: 6px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+  cursor: pointer;
+}
+
+.settings-reset:hover {
+  background: #2d3460;
+}
+
+/* Command palette (Ctrl/Cmd+P). Uses theme variables so it follows the active
+   theme (OS or forced) without extra dark-mode rules. */
+.palette-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: rgba(8, 6, 13, 0.45);
+  display: flex;
+  justify-content: center;
+  align-items: flex-start;
+  padding-top: 12vh;
+}
+
+.palette {
+  width: min(640px, 90vw);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+
+.palette input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 0.75rem 1rem;
+  font-size: 15px;
+  color: var(--text-h);
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  outline: none;
+}
+
+.palette-list {
+  list-style: none;
+  margin: 0;
+  padding: 0.25rem 0;
+  max-height: 40vh;
+  overflow-y: auto;
+}
+
+.palette-item {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  padding: 0.375rem 1rem;
+  cursor: pointer;
+}
+
+.palette-item.active {
+  background: var(--accent-bg);
+}
+
+.palette-name {
+  font-family: var(--mono);
+  font-size: 13px;
+  color: var(--text-h);
+  flex-shrink: 0;
+}
+
+.palette-dir {
+  font-size: 12px;
+  color: var(--text);
+  opacity: 0.75;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.palette-empty {
+  padding: 0.6rem 1rem;
+  font-size: 13px;
+  color: var(--text);
+  opacity: 0.75;
+}

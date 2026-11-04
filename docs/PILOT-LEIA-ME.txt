@@ -1,0 +1,66 @@
+TerraCode — edição comunitária — Linux x64
+
+Este pacote permite testar o TerraCode localmente sem Node.js, npm ou acesso ao
+repositório do projeto. Compatível com Linux x64 com glibc, incluindo Ubuntu
+24.04 e Ubuntu no WSL2. Não é um executável nativo para Windows, macOS, ARM64
+ou Alpine Linux. Use o terminal Ubuntu no WSL2, não o PowerShell.
+
+INICIAR
+1. Extraia o arquivo .tar.gz em uma pasta de sua preferência.
+2. No terminal, entre na pasta extraída e execute:
+   chmod +x terracode
+   ./terracode
+3. Abra http://localhost:5173 no navegador. Mantenha o terminal aberto.
+4. Encerre com Ctrl+C. Não execute como root nem use sudo.
+
+Para iniciar com um projeto existente, use um caminho Linux real:
+   ./terracode --project /caminho/absoluto/do/projeto
+Sem --project, a pasta inicial é ~/.terracode-pilot/workspace.
+Você também pode abrir outra pasta pela interface.
+
+PRIMEIRO TESTE
+Instale Git e Terraform no mesmo ambiente Linux em que iniciou o executável.
+O Terraform precisa ser 1.4 ou superior para o exemplo incluído.
+Crie uma pasta vazia, copie demo.tf.example para ela com o nome main.tf e
+abra essa pasta no TerraCode usando Load Terraform project….
+Experimente Init, Format, Validate e Plan. O exemplo usa terraform_data;
+não exige credenciais nem provisiona recursos de nuvem.
+Para testar Apply: Save plan & prepare apply… > Review saved plan >
+Apply saved plan. Revise antes de confirmar. Confira State e Outputs.
+Em um projeto real, Apply e Destroy alteram infraestrutura e podem gerar custos.
+Use inicialmente projetos descartáveis ou ambientes de teste autorizados.
+
+REQUISITOS E LIMITES
+- Portas locais 5173 e 3001 livres; pare outra instância se houver conflito.
+- Git e Terraform instalados no PATH do terminal que inicia o TerraCode.
+- AWS CLI, Azure CLI ou Google Cloud CLI somente para os respectivos logins.
+- tfenv e Infracost são opcionais; não estão incluídos neste pacote.
+- A interface e a API escutam somente em 127.0.0.1. Não publique essas portas.
+- O aplicativo pode alterar os arquivos e recursos dos projetos que você abrir.
+- Credenciais registradas usam o armazenamento local já existente do TerraCode
+  em ~/.terraform-code; não envie esse diretório para suporte.
+- Não há exigência de login no repositório nem envio automático de feedback.
+- Operações de nuvem, Git remoto, registry, instalação de versões e custos
+  podem acessar serviços externos quando você as utiliza.
+
+FEEDBACK
+Use FEEDBACK.txt e envie suas observações para pedroduarte@terracodeiac.com.
+Descreva instalação, facilidade de uso, recursos testados e dificuldades.
+Não envie segredos, PATs, chaves privadas, state, planos ou dados de clientes.
+Informe a versão exibida por ./terracode --version e seu sistema operacional.
+
+DISTRIBUIÇÃO
+Copyright (c) 2026 Pedro Duarte. Licença AGPL-3.0-only; consulte LICENSE.
+Uso, modificação e redistribuição seguem essa licença, incluindo as exigências
+de disponibilização do código correspondente. SOURCE.txt identifica o código
+e as instruções de build correspondentes no GitHub. Componentes de terceiros
+mantêm suas licenças; consulte THIRD-PARTY-NOTICES.txt. Software sem garantia.
+O backend usa bytecode V8 e a interface é compilada; arquivos-fonte originais,
+histórico Git e source maps não acompanham o pacote. Obtenha o código
+correspondente pelo SOURCE.txt. O JavaScript do navegador é inspecionável.
+A participação na comunidade e o feedback são voluntários e sem remuneração.
+Não há atualização automática. Para atualizar, encerre, extraia o novo pacote
+e execute-o. Seus projetos e credenciais permanecem fora do executável.
+
+Verificação local de integridade: sha256sum -c SHA256SUMS
+Esse checksum detecta alterações; não é uma assinatura digital do editor.

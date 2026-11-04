@@ -1,0 +1,53 @@
+{
+  "name": "app-test",
+  "private": true,
+  "version": "0.0.0",
+  "license": "AGPL-3.0-only",
+  "author": "Pedro Duarte <pedroduarte@terracodeiac.com>",
+  "homepage": "https://terracodeiac.com",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/paduartesre/terracode.git"
+  },
+  "bugs": {
+    "url": "https://github.com/paduartesre/terracode/issues"
+  },
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "server": "node server.cjs",
+    "start": "concurrently \"npm run dev\" \"npm run server\"",
+    "build": "tsc -b && vite build",
+    "test": "vitest run",
+    "lint": "oxlint",
+    "preview": "vite preview",
+    "package:pilot": "node scripts/build-pilot.mjs",
+    "test:pilot": "node scripts/smoke-pilot.mjs"
+  },
+  "dependencies": {
+    "chokidar": "^3.6.0",
+    "cors": "^2.8.6",
+    "express": "^5.3.0",
+    "highlight.js": "^11.12.0",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "devDependencies": {
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.3",
+    "@types/node": "^24.19.2",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.2",
+    "bytenode": "2.1.0",
+    "concurrently": "^10.0.6",
+    "esbuild": "0.28.2",
+    "jsdom": "^29.1.1",
+    "oxlint": "^1.88.0",
+    "postject": "1.0.0-alpha.6",
+    "supertest": "^7.3.1",
+    "typescript": "~6.0.3",
+    "vite": "^8.3.4",
+    "vitest": "^5.0.5"
+  }
+}

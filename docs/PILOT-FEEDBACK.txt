@@ -1,0 +1,27 @@
+TerraCode — feedback de usabilidade / usability feedback
+Enviar para / Send to: pedroduarte@terracodeiac.com
+Issues: https://github.com/paduartesre/terracode/issues
+Participação voluntária e sem remuneração / Voluntary, unpaid participation.
+
+Nome / Name:
+Versão (./terracode --version) / Version:
+Sistema operacional; WSL2? / Operating system; WSL2?:
+Versão de Terraform e Git / Terraform and Git versions:
+
+1. Conseguiu iniciar sem ajuda? Onde teve dificuldade?
+   Could you start without help? Where did you get stuck?
+
+2. Qual tarefa tentou realizar? Quais recursos utilizou?
+   What task did you attempt? Which features did you use?
+
+3. Passos, resultado esperado e resultado observado:
+   Steps, expected result, and actual result:
+
+4. O que facilitou seu trabalho? O que ficou confuso?
+   What helped your work? What was confusing?
+
+5. Usaria novamente em outra tarefa? Por quê?
+   Would you use it again for another task? Why?
+
+Revise logs e imagens antes de anexar. Não inclua credenciais, tokens, chaves,
+state, planos ou dados de clientes. Review attachments; exclude sensitive data.
