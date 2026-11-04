@@ -1,6 +1,6 @@
 # Community executable distribution
 
-The community source, issues, and executable releases belong in [paduartesre/terracode](https://github.com/paduartesre/terracode). GitLab remains the maintainer's private development repository. Executables are an optional installation method; publish each package only after platform validation and confirmation of its corresponding source. Community participation is voluntary, free of charge, and unpaid.
+The community source, issues, and executable releases belong in [paduartesre/terracode](https://github.com/paduartesre/terracode). Executables are an optional installation method; publish each package only after platform validation and confirmation of its corresponding source. Community participation is voluntary, free of charge, and unpaid.
 
 ## Tester package
 
@@ -31,7 +31,7 @@ Use the LICENSE from the matching official Node.js distribution. The builder req
 
 `PILOT_SOURCE_COMMIT` may override the default `git rev-parse HEAD` when building from a verified export. Set it to the full commit that contains the packaging implementation. Do not relabel an artifact with a different SHA after building it.
 
-For a public release, build from the final commit in the GitHub repository. A GitLab commit SHA must not be used in a GitHub source link unless that exact commit was preserved during migration. Before publishing, verify that `SOURCE.txt` and `BUILD-INFO.json` identify the exact source used to build the executable and that those source files and build instructions are accessible to its recipients. The builder records the link but does not verify remote availability. Include the matching Node.js distribution license and preserve all third-party notices.
+For a public release, build from the final commit in the GitHub repository. Before publishing, verify that `SOURCE.txt` and `BUILD-INFO.json` identify the exact source used to build the executable and that those source files and build instructions are accessible to its recipients. The builder records the link but does not verify remote availability. Include the matching Node.js distribution license and preserve all third-party notices.
 
 The smoke test copies only the executable into a fresh temporary directory, uses an isolated HOME and a PATH without Node.js, then checks web assets, file operations, path boundaries, a local Git commit, real Terraform commands on the built-in `terraform_data` example, port-conflict handling and shutdown. It does not access cloud accounts.
 
@@ -47,7 +47,7 @@ TerraCode is licensed under [AGPL-3.0-only](../LICENSE), Copyright (c) 2026 Pedr
 
 ## Português (Brasil)
 
-O GitHub é o canal comunitário de código, issues e releases; o GitLab continua privado para o mantenedor. Executáveis são uma opção de instalação e cada pacote exige validação da plataforma e acesso ao código correspondente. A participação é voluntária, gratuita e sem remuneração. Use `LEIA-ME.txt` e `FEEDBACK.txt` para instalação e retorno dos testes.
+O GitHub é o canal comunitário de código, issues e releases. Executáveis são uma opção de instalação e cada pacote exige validação da plataforma e acesso ao código correspondente. A participação é voluntária, gratuita e sem remuneração. Use `LEIA-ME.txt` e `FEEDBACK.txt` para instalação e retorno dos testes.
 
 O pacote inclui runtime, backend em bytecode, interface compilada, exemplo local, instruções, checksum, avisos de terceiros, `LICENSE` e `SOURCE.txt`. Os fontes são disponibilizados separadamente na versão exata do GitHub identificada no pacote. Não inclui histórico Git, `node_modules` nem source maps. O JavaScript do navegador continua inspecionável. A licença é AGPL-3.0-only, sem a antiga restrição de redistribuição do piloto privado.
 
