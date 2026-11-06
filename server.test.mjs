@@ -689,6 +689,18 @@ describe('PUT /api/file-content', () => {
     expect(after.body.content).toBe('updated world\n')
   })
 
+  it('rejects content over the read limit with 413 and keeps the file', async () => {
+    const p = path.join(root, 'hello.txt')
+    const before = fs.readFileSync(p, 'utf-8')
+    const res = await request(app)
+      .put('/api/file-content')
+      .send({ path: p, content: 'a'.repeat(1024 * 1024 + 1) })
+    expect(res.status).toBe(413)
+    expect(fs.readFileSync(p, 'utf-8')).toBe(before)
+    const reopen = await request(app).get('/api/file-content').query({ path: p })
+    expect(reopen.status).toBe(200)
+  })
+
   it('rejects a stale mtime with 409', async () => {
     const p = path.join(root, 'hello.txt')
     const before = await request(app).get('/api/file-content').query({ path: p })
@@ -855,6 +867,14 @@ describe('POST /api/replace', () => {
     expect(res.status).toBe(200)
     expect(res.body.replaced).toBe(3)
     expect(fs.readFileSync(p, 'utf-8')).toBe('bar bar bar\n')
+  })
+
+  it('refuses a replacement that grows the file over the read limit', async () => {
+    const original = 'a'.repeat(600 * 1024)
+    const p = mkFile('grow.txt', original)
+    const res = await request(app).post('/api/replace').send({ path: p, find: 'a', replacement: 'aa' })
+    expect(res.status).toBe(413)
+    expect(fs.readFileSync(p, 'utf-8')).toBe(original)
   })
 
   it('replaces case-sensitively when requested', async () => {

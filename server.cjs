@@ -65,6 +65,13 @@ function withinAnyRootReal(real) {
   return false;
 }
 const MAX_FILE_SIZE = 1024 * 1024; // 1 MB
+
+// GET /api/file-content refuses files above MAX_FILE_SIZE, so every write path
+// checks the same limit: otherwise a file could be saved that cannot be reopened.
+function contentTooLarge(content) {
+  return Buffer.byteLength(content, 'utf-8') > MAX_FILE_SIZE;
+}
+const CONTENT_TOO_LARGE = { error: `Content too large (limit ${MAX_FILE_SIZE / 1024} KB)` };
 const MTIME_EPSILON_MS = 1;
 const HOST = process.env.HOST || '127.0.0.1'; // localhost only, no LAN exposure
 
@@ -240,6 +247,9 @@ app.put('/api/file-content', (req, res) => {
 
   if (typeof rawPath !== 'string' || typeof content !== 'string') {
     return res.status(400).json({ error: 'Body must include path and content strings' });
+  }
+  if (contentTooLarge(content)) {
+    return res.status(413).json(CONTENT_TOO_LARGE);
   }
 
   const resolved = resolveSafe(rawPath);
@@ -471,6 +481,9 @@ app.post('/api/replace', (req, res) => {
       return res.json({ replaced: 0, path: filePath, mtimeMs: stat.mtimeMs });
     }
 
+    if (contentTooLarge(updated)) {
+      return res.status(413).json(CONTENT_TOO_LARGE);
+    }
     writeFileAtomic(filePath, updated);
     markSelfWrite(filePath);
     const newStat = fs.statSync(filePath);
@@ -543,8 +556,8 @@ app.post('/api/files', (req, res) => {
     if (type === 'directory') {
       fs.mkdirSync(target);
     } else {
-      if (Buffer.byteLength(content, 'utf-8') > MAX_FILE_SIZE) {
-        return res.status(413).json({ error: `Content too large (limit ${MAX_FILE_SIZE / 1024} KB)` });
+      if (contentTooLarge(content)) {
+        return res.status(413).json(CONTENT_TOO_LARGE);
       }
       fs.writeFileSync(target, content, 'utf-8');
     }
