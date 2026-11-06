@@ -2519,8 +2519,9 @@ app.post('/api/tf/run', (req, res) => {
     }
   }
 
-  if (tfRunning.has(dir)) {
-    return res.status(409).json({ error: 'A terraform command is already running for this directory' });
+  const busy = projectBusyError(dir);
+  if (busy) {
+    return res.status(409).json({ error: busy });
   }
   tfRunning.add(dir);
 
@@ -2564,8 +2565,9 @@ app.get('/api/tf/run-stream', (req, res) => {
     }
   }
 
-  if (tfRunning.has(dir)) {
-    return res.status(409).json({ error: 'A terraform command is already running for this directory' });
+  const busy = projectBusyError(dir);
+  if (busy) {
+    return res.status(409).json({ error: busy });
   }
   tfRunning.add(dir);
 
@@ -2727,6 +2729,29 @@ const GIT_HASH_RE = /^[0-9a-f]{7,40}$/;
 // merge/rebase/push/pull/fetch/init). Read-only ops (status/diff/branches/
 // remotes) do not take this lock. One mutating op per directory at a time.
 const gitBusy = new Set();
+
+// Terraform commands and mutating git operations share one rule: nothing else
+// may run on the same project meanwhile. A checkout, merge or pull rewrites the
+// files a running terraform command reads, and a terraform run must not start
+// while git is rewriting them. Two paths belong to the same project when one
+// contains the other (a repository root and a Terraform folder inside it).
+function pathsOverlap(a, b) {
+  const inside = (child, parent) => {
+    const rel = path.relative(parent, child);
+    return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+  };
+  return inside(a, b) || inside(b, a);
+}
+
+function projectBusyError(dir) {
+  for (const d of tfRunning) {
+    if (pathsOverlap(d, dir)) return 'A terraform command is already running for this directory';
+  }
+  for (const d of gitBusy) {
+    if (pathsOverlap(d, dir)) return 'A git operation is already in progress for this directory';
+  }
+  return null;
+}
 
 // A safe branch/ref name: starts with a letter or digit, then letters/digits/
 // '.', '_', '/', '-' (never leading '-'). This keeps user input from being parsed
@@ -3181,8 +3206,9 @@ app.post('/api/git/commit', async (req, res) => {
     return res.status(500).json({ error: 'Failed to stat directory', details: err.message });
   }
 
-  if (gitBusy.has(dir)) {
-    return res.status(409).json({ error: 'A git operation is already in progress for this directory' });
+  const busy = projectBusyError(dir);
+  if (busy) {
+    return res.status(409).json({ error: busy });
   }
   gitBusy.add(dir);
 
@@ -3375,8 +3401,9 @@ app.post('/api/git/branch', async (req, res) => {
   const dir = resolveRepoDir(req, res);
   if (!dir) return;
 
-  if (gitBusy.has(dir)) {
-    return res.status(409).json({ error: 'A git operation is already in progress for this directory' });
+  const busy = projectBusyError(dir);
+  if (busy) {
+    return res.status(409).json({ error: busy });
   }
   gitBusy.add(dir);
   try {
@@ -3406,8 +3433,9 @@ app.post('/api/git/checkout', async (req, res) => {
   const dir = resolveRepoDir(req, res);
   if (!dir) return;
 
-  if (gitBusy.has(dir)) {
-    return res.status(409).json({ error: 'A git operation is already in progress for this directory' });
+  const busy = projectBusyError(dir);
+  if (busy) {
+    return res.status(409).json({ error: busy });
   }
   gitBusy.add(dir);
   try {
@@ -3437,8 +3465,9 @@ app.post('/api/git/merge', async (req, res) => {
   const dir = resolveRepoDir(req, res);
   if (!dir) return;
 
-  if (gitBusy.has(dir)) {
-    return res.status(409).json({ error: 'A git operation is already in progress for this directory' });
+  const busy = projectBusyError(dir);
+  if (busy) {
+    return res.status(409).json({ error: busy });
   }
   gitBusy.add(dir);
   try {
@@ -3480,8 +3509,9 @@ app.post('/api/git/rebase', async (req, res) => {
   const dir = resolveRepoDir(req, res);
   if (!dir) return;
 
-  if (gitBusy.has(dir)) {
-    return res.status(409).json({ error: 'A git operation is already in progress for this directory' });
+  const busy = projectBusyError(dir);
+  if (busy) {
+    return res.status(409).json({ error: busy });
   }
   gitBusy.add(dir);
   try {
@@ -3519,8 +3549,9 @@ app.post('/api/git/rebase-step', async (req, res) => {
   const dir = resolveRepoDir(req, res);
   if (!dir) return;
 
-  if (gitBusy.has(dir)) {
-    return res.status(409).json({ error: 'A git operation is already in progress for this directory' });
+  const busy = projectBusyError(dir);
+  if (busy) {
+    return res.status(409).json({ error: busy });
   }
   gitBusy.add(dir);
   try {
@@ -3566,8 +3597,9 @@ app.post('/api/git/init', async (req, res) => {
     return res.status(409).json({ error: 'Path is already a git repository', initialized: false });
   }
 
-  if (gitBusy.has(dir)) {
-    return res.status(409).json({ error: 'A git operation is already in progress for this directory' });
+  const busy = projectBusyError(dir);
+  if (busy) {
+    return res.status(409).json({ error: busy });
   }
   gitBusy.add(dir);
   try {
@@ -3617,8 +3649,9 @@ app.post('/api/git/push', async (req, res) => {
   const dir = resolveRepoDir(req, res);
   if (!dir) return;
 
-  if (gitBusy.has(dir)) {
-    return res.status(409).json({ error: 'A git operation is already in progress for this directory' });
+  const busy = projectBusyError(dir);
+  if (busy) {
+    return res.status(409).json({ error: busy });
   }
   gitBusy.add(dir);
   try {
@@ -3653,8 +3686,9 @@ app.post('/api/git/pull', async (req, res) => {
   const dir = resolveRepoDir(req, res);
   if (!dir) return;
 
-  if (gitBusy.has(dir)) {
-    return res.status(409).json({ error: 'A git operation is already in progress for this directory' });
+  const busy = projectBusyError(dir);
+  if (busy) {
+    return res.status(409).json({ error: busy });
   }
   gitBusy.add(dir);
   try {
@@ -3684,8 +3718,9 @@ app.post('/api/git/fetch', async (req, res) => {
   const dir = resolveRepoDir(req, res);
   if (!dir) return;
 
-  if (gitBusy.has(dir)) {
-    return res.status(409).json({ error: 'A git operation is already in progress for this directory' });
+  const busy = projectBusyError(dir);
+  if (busy) {
+    return res.status(409).json({ error: busy });
   }
   gitBusy.add(dir);
   try {
