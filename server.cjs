@@ -1208,7 +1208,39 @@ function buildTfArgs(command, opts) {
 
 // Build the JSON payload for a terraform command. Returns { statusCode, body }.
 // onChunk (optional) receives raw stdout/stderr chunks while the command runs.
+// A saved plan carries the configuration it was made from, so applying it after
+// a .tf/.tfvars edit silently ignores that edit. Returns the first such file
+// changed after tf.plan was written, or null (also when there is no plan).
+function fileChangedSincePlan(dir) {
+  let planMtime;
+  try {
+    planMtime = fs.statSync(path.join(dir, TF_PLAN_FILE)).mtimeMs;
+  } catch {
+    return null;
+  }
+  const files = new Map();
+  collectTfFiles(dir, 0, files);
+  for (const file of files.keys()) {
+    try {
+      if (fs.statSync(file).mtimeMs > planMtime) return file;
+    } catch {
+      // removed meanwhile; nothing to compare
+    }
+  }
+  return null;
+}
+
 async function runTerraformCommand(command, dir, opts = {}, onChunk) {
+  if (command === 'apply') {
+    const changed = fileChangedSincePlan(dir);
+    if (changed) {
+      return {
+        statusCode: 409,
+        body: { error: `${path.relative(dir, changed)} changed after ${TF_PLAN_FILE} was created. Run the plan again before applying.` },
+      };
+    }
+  }
+
   // fmt needs the pre-format content to build diffs; capture it first.
   const before = new Map();
   if (command === 'fmt') collectTfFiles(dir, 0, before);

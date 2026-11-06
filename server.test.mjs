@@ -1447,6 +1447,26 @@ describe('POST /api/tf/run (lifecycle)', () => {
     expect(fs.readFileSync(path.join(dir, '.apply-log'), 'utf-8').trim()).toBe('apply -input=false -no-color tf.plan')
   })
 
+  it('refuses to apply a saved plan when a .tf file changed after it', async () => {
+    const dir = tfDir('plan')
+    const mainTf = path.join(dir, 'main.tf')
+    if (!fs.existsSync(mainTf)) fs.writeFileSync(mainTf, 'resource "s" "t" {}\n')
+    fs.rmSync(path.join(dir, '.apply-log'), { force: true })
+    await request(app).post('/api/tf/run').send({ command: 'plan-file', path: dir })
+    const later = new Date(Date.now() + 5000)
+    fs.utimesSync(path.join(dir, 'main.tf'), later, later)
+    const res = await request(app).post('/api/tf/run').send({ command: 'apply', path: dir })
+    expect(res.status).toBe(409)
+    expect(res.body.error).toContain('main.tf changed after tf.plan')
+    expect(fs.existsSync(path.join(dir, '.apply-log'))).toBe(false)
+
+    await request(app).post('/api/tf/run').send({ command: 'plan-file', path: dir })
+    const fresh = new Date(Date.now() - 5000)
+    fs.utimesSync(path.join(dir, 'main.tf'), fresh, fresh)
+    const again = await request(app).post('/api/tf/run').send({ command: 'apply', path: dir })
+    expect(again.status).toBe(200)
+  })
+
   it('apply fails cleanly when no plan file exists', async () => {
     const dir = tfDir('slow')
     fs.rmSync(path.join(dir, 'tf.plan'), { force: true })
