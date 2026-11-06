@@ -559,6 +559,22 @@ app.post('/api/files', (req, res) => {
 });
 
 // API endpoint: rename or move a file/directory within the allowed root
+// True when realPath is one of the allowed roots itself (compared by real path).
+// Deleting or renaming a root would pull the folder the user opened out from
+// under the server, so both operations refuse it.
+function isAllowedRoot(realPath) {
+  for (const r of allRoots()) {
+    let real;
+    try {
+      real = fs.realpathSync(r);
+    } catch {
+      continue;
+    }
+    if (realPath === real) return true;
+  }
+  return false;
+}
+
 app.post('/api/rename', (req, res) => {
   const body = req.body ?? {};
   const from = body.from;
@@ -574,6 +590,10 @@ app.post('/api/rename', (req, res) => {
   if (!respondResolve(res, dstCheck)) return;
   const source = srcCheck.path;
   const target = dstCheck.path;
+
+  if (isAllowedRoot(source)) {
+    return res.status(403).json({ error: 'Cannot rename an allowed root directory' });
+  }
 
   try {
     fs.statSync(target); // destination must not exist
@@ -608,17 +628,8 @@ app.delete('/api/files', (req, res) => {
   if (!respondResolve(res, resolved)) return;
   const target = resolved.path;
 
-  // Never allow deleting an allowed root directory itself.
-  for (const r of allRoots()) {
-    let real;
-    try {
-      real = fs.realpathSync(r);
-    } catch {
-      continue;
-    }
-    if (target === real) {
-      return res.status(403).json({ error: 'Cannot delete an allowed root directory' });
-    }
+  if (isAllowedRoot(target)) {
+    return res.status(403).json({ error: 'Cannot delete an allowed root directory' });
   }
 
   try {

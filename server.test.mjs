@@ -2096,6 +2096,16 @@ describe('allowed roots (/api/roots)', () => {
     expect(fs.existsSync(extra())).toBe(true)
   })
 
+  it('refuses to rename a runtime-added root with 403', async () => {
+    const moved = path.join(root, 'extra-moved')
+    const allow = await request(app).post('/api/roots').send({ path: extra() })
+    expect(allow.status).toBe(200)
+    const res = await request(app).post('/api/rename').send({ from: extra(), to: moved })
+    expect(res.status).toBe(403)
+    expect(fs.existsSync(extra())).toBe(true)
+    expect(fs.existsSync(moved)).toBe(false)
+  })
+
   it('rejects a missing directory with 404', async () => {
     const res = await request(app).post('/api/roots').send({ path: path.join(base, 'nope') })
     expect(res.status).toBe(404)
