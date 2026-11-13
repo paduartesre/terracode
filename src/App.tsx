@@ -490,7 +490,7 @@ function App() {
       const t = tabsRef.current.find(x => x.path === path)
       if (!t) return
       if (isDirty(t) && !window.confirm('Discard unsaved changes?')) return
-      updateTab(path, { editing: false, reviewing: false })
+      updateTab(path, { editing: false, reviewing: false, error: '' })
     },
     [updateTab],
   )
@@ -499,7 +499,7 @@ function App() {
     (path: string) => {
       const t = tabsRef.current.find(x => x.path === path)
       if (!t || !window.confirm('Discard your edits and revert to the saved version?')) return
-      updateTab(path, { draft: t.loaded?.content ?? '', reviewing: false })
+      updateTab(path, { draft: t.loaded?.content ?? '', reviewing: false, error: '' })
     },
     [updateTab],
   )
@@ -513,6 +513,7 @@ function App() {
         const result = await saveFileContent(t.loaded.path, t.draft, t.loaded.mtimeMs)
         updateTab(path, {
           loaded: { path: result.path, content: t.draft, mtimeMs: result.mtimeMs },
+          error: '',
           editing: false,
           reviewing: false,
           saveState: 'saved',

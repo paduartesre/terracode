@@ -729,6 +729,58 @@ describe('PUT /api/file-content', () => {
     expect(after.body.content).toBe('updated world\n')
   })
 
+  it('rejects content over the read limit with 413 and keeps the file', async () => {
+    const p = path.join(root, 'hello.txt')
+    const before = fs.readFileSync(p, 'utf-8')
+    const res = await request(app)
+      .put('/api/file-content')
+      .send({ path: p, content: 'a'.repeat(1024 * 1024 + 1) })
+    expect(res.status).toBe(413)
+    expect(fs.readFileSync(p, 'utf-8')).toBe(before)
+    const reopen = await request(app).get('/api/file-content').query({ path: p })
+    expect(reopen.status).toBe(200)
+  })
+
+  it('accepts content just below and exactly at the limit', async () => {
+    const p = path.join(root, 'boundary.txt')
+    fs.writeFileSync(p, 'seed\n')
+    const below = await request(app)
+      .put('/api/file-content')
+      .send({ path: p, content: 'a'.repeat(1024 * 1024 - 1) })
+    expect(below.status).toBe(200)
+    expect(fs.statSync(p).size).toBe(1024 * 1024 - 1)
+
+    const exact = await request(app)
+      .put('/api/file-content')
+      .send({ path: p, content: 'a'.repeat(1024 * 1024) })
+    expect(exact.status).toBe(200)
+    expect(fs.statSync(p).size).toBe(1024 * 1024)
+    // A file exactly at the limit can still be reopened by the editor.
+    const reopen = await request(app).get('/api/file-content').query({ path: p })
+    expect(reopen.status).toBe(200)
+    fs.rmSync(p)
+  })
+
+  it('measures saved content in UTF-8 bytes, not characters', async () => {
+    const p = path.join(root, 'multibyte.txt')
+    fs.writeFileSync(p, 'seed\n')
+    // 524288 two-byte chars = exactly 1048576 bytes: accepted.
+    const atLimit = await request(app)
+      .put('/api/file-content')
+      .send({ path: p, content: '\u00e9'.repeat(524288) })
+    expect(atLimit.status).toBe(200)
+    expect(fs.statSync(p).size).toBe(1024 * 1024)
+
+    // One more two-byte char = 1048578 bytes: rejected, file keeps the previous content.
+    const before = fs.readFileSync(p, 'utf-8')
+    const over = await request(app)
+      .put('/api/file-content')
+      .send({ path: p, content: '\u00e9'.repeat(524289) })
+    expect(over.status).toBe(413)
+    expect(fs.readFileSync(p, 'utf-8')).toBe(before)
+    fs.rmSync(p)
+  })
+
   it('rejects a stale mtime with 409', async () => {
     const p = path.join(root, 'hello.txt')
     const before = await request(app).get('/api/file-content').query({ path: p })
@@ -895,6 +947,176 @@ describe('POST /api/replace', () => {
     expect(res.status).toBe(200)
     expect(res.body.replaced).toBe(3)
     expect(fs.readFileSync(p, 'utf-8')).toBe('bar bar bar\n')
+  })
+
+  it('refuses a replacement that grows the file over the read limit', async () => {
+    const original = 'a'.repeat(600 * 1024)
+    const p = mkFile('grow.txt', original)
+    const res = await request(app).post('/api/replace').send({ path: p, find: 'a', replacement: 'aa' })
+    expect(res.status).toBe(413)
+    expect(fs.readFileSync(p, 'utf-8')).toBe(original)
+  })
+
+  it('accepts a replacement that lands just below and exactly at the limit', async () => {
+    // Doubling 524287 chars = 1048574 bytes: under the limit.
+    const pBelow = mkFile('grow-below.txt', 'a'.repeat(524287))
+    const below = await request(app).post('/api/replace').send({ path: pBelow, find: 'a', replacement: 'aa' })
+    expect(below.status).toBe(200)
+    expect(below.body.replaced).toBe(524287)
+    expect(fs.statSync(pBelow).size).toBe(1048574)
+
+    // Doubling 524288 chars = exactly 1048576 bytes: at the limit.
+    const pExact = mkFile('grow-exact.txt', 'a'.repeat(524288))
+    const exact = await request(app).post('/api/replace').send({ path: pExact, find: 'a', replacement: 'aa' })
+    expect(exact.status).toBe(200)
+    expect(fs.statSync(pExact).size).toBe(1024 * 1024)
+  })
+
+  it('refuses a replacement that lands one byte over the limit and keeps the file', async () => {
+    // 'b' + doubled 524288 chars = 1048577 bytes: one over.
+    const original = 'b' + 'a'.repeat(524288)
+    const p = mkFile('grow-over.txt', original)
+    const res = await request(app).post('/api/replace').send({ path: p, find: 'a', replacement: 'aa' })
+    expect(res.status).toBe(413)
+    expect(fs.readFileSync(p, 'utf-8')).toBe(original)
+  })
+
+  it('measures the replaced result in UTF-8 bytes, not characters', async () => {
+    // Each of 524288 matches becomes a two-byte char = exactly the limit.
+    const pExact = mkFile('grow-mb-exact.txt', 'a'.repeat(524288))
+    const exact = await request(app)
+      .post('/api/replace')
+      .send({ path: pExact, find: 'a', replacement: '\u00e9' })
+    expect(exact.status).toBe(200)
+    expect(fs.statSync(pExact).size).toBe(1024 * 1024)
+
+    // One more match = 1048578 bytes: rejected, file unchanged.
+    const original = 'a'.repeat(524289)
+    const pOver = mkFile('grow-mb-over.txt', original)
+    const over = await request(app)
+      .post('/api/replace')
+      .send({ path: pOver, find: 'a', replacement: '\u00e9' })
+    expect(over.status).toBe(413)
+    expect(fs.readFileSync(pOver, 'utf-8')).toBe(original)
+  })
+
+  it('rejects a huge expansion without building the result first', async () => {
+    // Final size would be ~600 KB x 200 KB per match (~120 GB). The exact-size
+    // pre-check must refuse this before any large allocation; without it this
+    // request would exhaust memory or time out.
+    const original = 'a'.repeat(600 * 1024)
+    const p = mkFile('grow-huge.txt', original)
+    const res = await request(app)
+      .post('/api/replace')
+      .send({ path: p, find: 'a', replacement: 'x'.repeat(200_000) })
+    expect(res.status).toBe(413)
+    expect(fs.readFileSync(p, 'utf-8')).toBe(original)
+  })
+
+  it('still refuses a "$"-pattern replacement that grows the file over the limit', async () => {
+    // $& expands per match and its output must respect the same limit.
+    const original = 'a'.repeat(600 * 1024)
+    const p = mkFile('grow-dollar.txt', original)
+    const res = await request(app).post('/api/replace').send({ path: p, find: 'a', replacement: '$&$&' })
+    expect(res.status).toBe(413)
+    expect(fs.readFileSync(p, 'utf-8')).toBe(original)
+  })
+
+  it('accepts surrogate pairs formed across replacement boundaries', async () => {
+    const original = 'a'.repeat(180000)
+    const replacement = String.fromCharCode(0xde00, 0xd83d)
+    const expected = original.split('a').join(replacement)
+    expect(Buffer.byteLength(expected, 'utf-8')).toBe(720002)
+    const p = mkFile('surrogate-boundaries.txt', original)
+    const res = await request(app).post('/api/replace').send({ path: p, find: 'a', replacement, caseSensitive: true })
+    expect(res.status).toBe(200)
+    expect(fs.readFileSync(p, 'utf-8')).toBe(Buffer.from(expected, 'utf-8').toString('utf-8'))
+  })
+
+  it('rejects a large literal dollar replacement before allocating it', async () => {
+    const original = 'a'.repeat(10000)
+    const p = mkFile('literal-dollar-huge.txt', original)
+    const res = await request(app).post('/api/replace').send({
+      path: p, find: 'a', replacement: '$' + 'x'.repeat(60000), caseSensitive: true
+    })
+    expect(res.status).toBe(413)
+    expect(fs.readFileSync(p, 'utf-8')).toBe(original)
+  })
+
+  it('rejects large prefix and suffix substitutions before constructing the output', async () => {
+    const original = 'a'.repeat(50000)
+    for (const [name, replacement] of [['prefix', '$`'], ['suffix', "$'"]]) {
+      const p = mkFile(`grow-${name}.txt`, original)
+      const res = await request(app).post('/api/replace').send({ path: p, find: 'a', replacement, regex: true })
+      expect(res.status).toBe(413)
+      expect(fs.readFileSync(p, 'utf-8')).toBe(original)
+    }
+  })
+
+  it('measures prefix substitutions on both sides of the limit', async () => {
+    const replacement = '$`'
+    const below = 'a'.repeat(1448)
+    const expected = below.replace(/a/g, replacement)
+    expect(Buffer.byteLength(expected)).toBeLessThanOrEqual(1024 * 1024)
+    const belowPath = mkFile('prefix-below.txt', below)
+    const ok = await request(app).post('/api/replace').send({ path: belowPath, find: 'a', replacement, regex: true })
+    expect(ok.status).toBe(200)
+    expect(fs.readFileSync(belowPath, 'utf-8')).toBe(expected)
+
+    const above = 'a'.repeat(1449)
+    expect(Buffer.byteLength(above.replace(/a/g, replacement))).toBeGreaterThan(1024 * 1024)
+    const abovePath = mkFile('prefix-above.txt', above)
+    const rejected = await request(app).post('/api/replace').send({ path: abovePath, find: 'a', replacement, regex: true })
+    expect(rejected.status).toBe(413)
+    expect(fs.readFileSync(abovePath, 'utf-8')).toBe(above)
+  })
+
+  it('handles repeated empty capture expansions without constructing large intermediates', async () => {
+    const original = 'ab'.repeat(15000)
+    const p = mkFile('empty-captures.txt', original)
+    const res = await request(app).post('/api/replace').send({
+      path: p, find: '()(a|b)', replacement: '$1'.repeat(30000), regex: true
+    })
+    expect(res.status).toBe(200)
+    expect(res.body.replaced).toBe(30000)
+    expect(fs.readFileSync(p, 'utf-8')).toBe('')
+  })
+
+  it('preserves JavaScript replacement semantics for captures, zero-width matches, and literal dollars', async () => {
+    const cases = [
+      { text: 'ab a', find: '(a)(b)?', replacement: '$$-$&-$1-$2-$01-$12-$99', regex: true, caseSensitive: true },
+      { text: 'aA', find: '(?<word>a)', replacement: '$<word>-$<missing>-$1', regex: true, caseSensitive: false },
+      { text: 'abcdefghij', find: '(a)(b)(c)(d)(e)(f)(g)(h)(i)(j)', replacement: '$10-$09-$01-$12', regex: true, caseSensitive: true },
+      { text: 'aba', find: 'a', replacement: '$`|$\'|$&', regex: true, caseSensitive: true },
+      { text: 'aa', find: '(?=a)', replacement: 'x', regex: true, caseSensitive: true },
+      { text: '😀😀', find: '(?=.)', replacement: 'x', regex: true, caseSensitive: true },
+      { text: 'a.A.a', find: '.', replacement: '$1', regex: false, caseSensitive: true },
+      { text: 'a.A.a', find: 'a', replacement: '$&$$', regex: false, caseSensitive: false }
+    ]
+    for (const [index, c] of cases.entries()) {
+      let expected
+      let matches
+      if (c.regex) {
+        const pattern = new RegExp(c.find, c.caseSensitive ? 'g' : 'gi')
+        expected = c.text.replace(pattern, c.replacement)
+        matches = c.text.match(pattern)?.length ?? 0
+      } else if (c.caseSensitive) {
+        const pieces = c.text.split(c.find)
+        expected = pieces.join(c.replacement)
+        matches = pieces.length - 1
+      } else {
+        const escaped = c.find.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+        const pattern = new RegExp(escaped, 'gi')
+        expected = c.text.replace(pattern, c.replacement)
+        matches = c.text.match(pattern)?.length ?? 0
+      }
+      const p = mkFile(`replace-semantics-${index}.txt`, c.text)
+      const res = await request(app).post('/api/replace').send({ path: p, ...c })
+      expect(res.status).toBe(200)
+      expect(res.body.replaced).toBe(expected === c.text ? 0 : matches)
+      // File writes encode lone UTF-16 surrogates as replacement characters.
+      expect(fs.readFileSync(p, 'utf-8')).toBe(Buffer.from(expected, 'utf-8').toString('utf-8'))
+    }
   })
 
   it('replaces case-sensitively when requested', async () => {
@@ -1087,6 +1309,42 @@ describe('POST /api/files (create)', () => {
       .send({ path: p, type: 'file', content: 'a'.repeat(1_200_000) }) // > 1 MB limit
     expect(res.status).toBe(413)
     expect(fs.existsSync(p)).toBe(false)
+  })
+
+  it('creates a file exactly at the limit and rejects one byte over', async () => {
+    const exact = path.join(root, 'boundary-create.txt')
+    const ok = await request(app)
+      .post('/api/files')
+      .send({ path: exact, type: 'file', content: 'a'.repeat(1024 * 1024) })
+    expect(ok.status).toBe(200)
+    expect(fs.statSync(exact).size).toBe(1024 * 1024)
+    fs.rmSync(exact)
+
+    const over = path.join(root, 'boundary-create-over.txt')
+    const res = await request(app)
+      .post('/api/files')
+      .send({ path: over, type: 'file', content: 'a'.repeat(1024 * 1024 + 1) })
+    expect(res.status).toBe(413)
+    // A rejected creation must not leave a file behind.
+    expect(fs.existsSync(over)).toBe(false)
+  })
+
+  it('measures created content in UTF-8 bytes, not characters', async () => {
+    const p = path.join(root, 'multibyte-create.txt')
+    // 524289 two-byte chars = 1048578 bytes > limit: rejected, nothing created.
+    const res = await request(app)
+      .post('/api/files')
+      .send({ path: p, type: 'file', content: '\u00e9'.repeat(524289) })
+    expect(res.status).toBe(413)
+    expect(fs.existsSync(p)).toBe(false)
+
+    // 524288 two-byte chars = exactly the limit in bytes: created.
+    const ok = await request(app)
+      .post('/api/files')
+      .send({ path: p, type: 'file', content: '\u00e9'.repeat(524288) })
+    expect(ok.status).toBe(200)
+    expect(fs.statSync(p).size).toBe(1024 * 1024)
+    fs.rmSync(p)
   })
 
   it('returns 404 when the parent directory does not exist', async () => {
