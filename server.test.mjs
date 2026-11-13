@@ -1364,6 +1364,34 @@ describe('POST /api/tf/run', () => {
     expect([a.status, b.status].sort()).toEqual([200, 409])
   })
 
+  it('refuses a git checkout in the project while terraform is running', async () => {
+    const dir = tfDir('locked')
+    fs.mkdirSync(path.join(dir, '.git'), { recursive: true })
+    fs.writeFileSync(path.join(dir, 'main.tf'), 'resource "s" "t" {}\n')
+    fs.writeFileSync(path.join(dir, '.slow-plan'), '')
+    const plan = request(app).post('/api/tf/run').send({ command: 'plan', path: dir }).then(r => r)
+    await new Promise(resolve => setTimeout(resolve, 300))
+    const checkout = await request(app).post('/api/git/checkout').send({ path: dir, ref: 'other' })
+    expect(checkout.status).toBe(409)
+    expect(checkout.body.error).toContain('terraform')
+    expect(fs.existsSync(path.join(dir, '.git', 'op-log'))).toBe(false)
+    await plan
+  }, 15_000)
+
+  it('refuses a git checkout at the repository root while terraform runs in a folder inside it', async () => {
+    const repoRoot = tfDir('locked-repo')
+    const project = path.join(repoRoot, 'infra')
+    fs.mkdirSync(path.join(repoRoot, '.git'), { recursive: true })
+    fs.mkdirSync(project, { recursive: true })
+    fs.writeFileSync(path.join(project, 'main.tf'), 'resource "s" "t" {}\n')
+    fs.writeFileSync(path.join(project, '.slow-plan'), '')
+    const plan = request(app).post('/api/tf/run').send({ command: 'plan', path: project }).then(r => r)
+    await new Promise(resolve => setTimeout(resolve, 300))
+    const checkout = await request(app).post('/api/git/checkout').send({ path: repoRoot, ref: 'other' })
+    expect(checkout.status).toBe(409)
+    await plan
+  }, 15_000)
+
   it('kills a plan that exceeds the timeout', async () => {
     const dir = tfDir('slow')
     fs.writeFileSync(path.join(dir, 'main.tf'), 'resource "s" "t" {}\n')
