@@ -12,7 +12,7 @@ function makeLocalStorage() {
   }
 }
 
-const KEY = 'app-test.settings'
+const KEY = 'terracode.settings'
 
 beforeEach(() => {
   Object.defineProperty(globalThis, 'localStorage', { value: makeLocalStorage(), configurable: true })

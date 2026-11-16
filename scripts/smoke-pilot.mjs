@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
+import net from 'node:net';
 import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
 import { fileURLToPath } from 'node:url';
@@ -25,6 +26,28 @@ await fs.chmod(executable, 0o755);
 await fs.copyFile(path.join(root, 'examples/local-demo/main.tf'), path.join(project, 'main.tf'));
 const env = { ...process.env, HOME: sandbox, PATH: bin, NODE_PATH: '', NODE_OPTIONS: '', TFENV_DISABLE: '1', TF_CODE_CRED_DIR: path.join(sandbox, 'credentials'), CLOUD_CLI_EXTRA_PATH: '' };
 assert.notEqual(spawnSync('node', ['--version'], { env }).status, 0, 'Node must not be available on the test PATH');
+// The packaged Git askpass helper must work without Node on PATH.
+const broker = net.createServer(socket => {
+  let data = '';
+  socket.on('data', chunk => {
+    data += chunk.toString();
+    if (!data.includes('\n')) return;
+    const query = JSON.parse(data);
+    socket.end(JSON.stringify({ value: query.key === 'pilot-capability' ? 'pilot-dummy-value' : null }));
+  });
+});
+await new Promise(resolve => broker.listen(0, '127.0.0.1', resolve));
+try {
+  const helperEnv = { ...env, TERRACODE_GIT_PORT: String(broker.address().port), TERRACODE_GIT_KEY: 'pilot-capability' };
+  const helper = spawn(executable, ['--terracode-git-askpass', "Username for 'https://example.invalid':"], { env: helperEnv, stdio: ['ignore', 'pipe', 'pipe'] });
+  let helperOutput = '';
+  helper.stdout.on('data', data => { helperOutput += data; });
+  const [helperCode] = await once(helper, 'exit');
+  assert.equal(helperCode, 0);
+  assert.equal(helperOutput.trim(), 'pilot-dummy-value');
+} finally {
+  await new Promise(resolve => broker.close(resolve));
+}
 assert.equal(spawnSync(executable, ['--help'], { cwd: sandbox, env }).status, 0);
 const invalidProject = spawnSync(executable, ['--project', path.join(sandbox, 'missing')], { cwd: sandbox, env, encoding: 'utf8' });
 assert.equal(invalidProject.status, 1);
@@ -37,10 +60,12 @@ child.stdout.on('data', data => { logs += data; });
 child.stderr.on('data', data => { logs += data; });
 const exited = once(child, 'exit');
 let failures;
+let exitCode;
+const cleanupErrors = [];
 try {
   await new Promise((resolve, reject) => {
     const timeout = setTimeout(() => reject(new Error('Startup timeout: ' + logs)), 15000);
-    const ready = data => {
+    const ready = () => {
       if (!logs.includes('TerraCode pilot:')) return;
       clearTimeout(timeout);
       child.stdout.off('data', ready);
@@ -76,11 +101,16 @@ try {
   assert.equal((await api('/api/git/commit', { path: project, message: 'Pilot local demo' })).committed, true);
   const run = command => api('/api/tf/run', { command, path: project });
   for (const command of ['version', 'init', 'fmt']) assert.equal((await run(command)).exitCode, 0, command);
-  assert.equal((await run('validate')).valid, true);
+  assert.equal((await run('validate')).exitCode, 0);
+  const plan = await run('plan');
+  assert.equal(plan.exitCode, 0);
+  assert.ok(plan.previewId);
+  const rawPlan = await api('/api/tf/plan-json', { path: project, previewId: plan.previewId });
+  assert.ok(JSON.parse(rawPlan.rawJson).format_version);
   assert.equal((await run('plan-file')).exitCode, 0);
   assert.match((await run('show-plan')).output, /terraform_data\.demo/);
   assert.equal((await run('apply')).exitCode, 0);
-  assert.equal((await run('output')).outputs.demo_message.value, 'TerraCode local demo');
+  assert.match((await run('output')).output, /demo_message = "TerraCode local demo"/);
   assert.ok((await run('state-list')).addresses.includes('terraform_data.demo'));
   assert.equal((await run('plan-file-destroy')).exitCode, 0);
   assert.equal((await run('apply')).exitCode, 0);
@@ -91,12 +121,25 @@ try {
   const [code] = await once(contender, 'exit');
   assert.equal(code, 1);
   assert.match(contenderLogs, /already in use/);
-  console.log('PASS: isolated executable, frontend assets, no source/maps, file read/write, path denial, Git commit, real Terraform init/validate/plan/apply/outputs/state/destroy, port conflict.');
 } catch (error) { failures = error; }
 finally {
-  child.kill('SIGTERM');
-  const [code] = await exited;
-  await fs.rm(sandbox, { recursive: true, force: true });
-  if (failures) throw new Error(failures.message + '\nExecutable output:\n' + logs, { cause: failures });
-  assert.equal(code, 0, 'Executable should stop cleanly');
+  try {
+    child.kill('SIGTERM');
+    [exitCode] = await exited;
+  } catch (error) {
+    cleanupErrors.push(error);
+  }
+  try {
+    await fs.rm(sandbox, { recursive: true, force: true });
+  } catch (error) {
+    cleanupErrors.push(error);
+  }
 }
+if (failures) {
+  const failure = new Error(failures.message + '\nExecutable output:\n' + logs, { cause: failures });
+  if (cleanupErrors.length) throw new AggregateError([failure, ...cleanupErrors], 'Smoke test and cleanup failed');
+  throw failure;
+}
+if (cleanupErrors.length) throw new AggregateError(cleanupErrors, 'Smoke test cleanup failed');
+assert.equal(exitCode, 0, 'Executable should stop cleanly');
+console.log('PASS: isolated executable, frontend assets, no source/maps, file read/write, path denial, Git commit, real Terraform init/validate/plan/apply/outputs/state/destroy, port conflict.');

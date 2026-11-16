@@ -9,7 +9,7 @@ type TfProjectPickerProps = {
   onClose: () => void
 }
 
-const RECENT_KEY = 'app-test.tf-recent-dirs'
+const RECENT_KEY = 'terracode.tf-recent-dirs'
 const MAX_RECENT_DIRS = 5
 
 function loadRecentDirs(): string[] {

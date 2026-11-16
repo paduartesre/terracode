@@ -18,14 +18,16 @@ export type Settings = {
 export const MIN_ZOOM = 50
 export const MAX_ZOOM = 200
 
+// wordWrap defaults to off (IDE standard): the editor's line-number gutter is
+// hidden while wrapping is on, and long lines scroll horizontally instead.
 export const DEFAULT_SETTINGS: Settings = {
   zoom: 80,
-  wordWrap: true,
+  wordWrap: false,
   fontFamily: '',
   theme: 'system'
 }
 
-const SETTINGS_KEY = 'app-test.settings'
+const SETTINGS_KEY = 'terracode.settings'
 const THEME_MODES: ThemeMode[] = ['system', 'light', 'dark']
 
 export function clampZoom(zoom: number): number {

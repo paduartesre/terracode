@@ -7,6 +7,7 @@ import { costFailureDetail, costNeedsApiKey, driftOutcome } from './tfStatus'
 import {
   getTfCost,
   getTfCostAvailability,
+  getTerraformPlanJson,
   getTfStateInfo,
   getTfVersions,
   installTfVersion,
@@ -34,9 +35,17 @@ type TerraformPanelProps = {
   onLoadProject?: (dirPath: string | null) => void
   onFmtApplied?: (changedPaths: string[]) => void
   // Log view: when open, App hides the code and this panel fills the pane with
-  // the live command log. Toggled by the "Log" toolbar button.
+  // the live command log. Toggled by the "Log" toolbar button; every run also
+  // opens it automatically so output streams in real time like a terminal.
   logOpen?: boolean
   onToggleLog?: () => void
+  onOpenLog?: () => void
+  // Find (in-file search) is owned by App; the button sits next to the drift
+  // badge so it is reachable from any view mode. Hidden when no file can be
+  // searched.
+  findAvailable?: boolean
+  findActive?: boolean
+  onToggleFind?: () => void
 }
 
 const TF_VERSION_RE = /^\d+\.\d+(\.\d+)?(-[A-Za-z0-9.]+)?$/
@@ -50,14 +59,14 @@ const TF_WORKSPACE_RE = /^[A-Za-z0-9_-]{1,255}$/
 const VARFILE_COMMANDS: ReadonlySet<TfCommand> = new Set([
   'init',
   'init-upgrade',
-  'plan-json',
+  'plan',
   'drift',
   'plan-file',
   'plan-file-destroy'
 ])
 
 // Drift auto-check interval (minutes); 0 = off. Persisted globally.
-const DRIFT_INTERVAL_KEY = 'app-test.tf-drift-interval'
+const DRIFT_INTERVAL_KEY = 'terracode.tf-drift-interval'
 const DRIFT_INTERVALS = [5, 10, 30] as const
 
 // Failed checks are status feedback, not results: they auto-dismiss so a stale
@@ -82,7 +91,7 @@ function saveDriftInterval(minutes: number): void {
   }
 }
 
-const VARFILES_KEY = 'app-test.tf-varfiles'
+const VARFILES_KEY = 'terracode.tf-varfiles'
 
 // Per-directory remembered var file choice (dirPath -> file name).
 function loadVarFileMap(): Record<string, string> {
@@ -124,8 +133,6 @@ function planHasChanges(summary: TfPlanSummary | null): boolean {
 // Human label for the "Running terraform …" indicator.
 function runningLabel(c: TfCommand): string {
   switch (c) {
-    case 'plan-json':
-      return 'plan'
     case 'drift':
       return 'plan (drift check)'
     case 'graph':
@@ -153,9 +160,9 @@ function logStatusText(result: TfRunResult): { ok: boolean; text: string } {
                 : `Format finished — ${result.changedFiles.length} file(s) changed.`,
           }
     case 'validate':
-      return result.valid
-        ? { ok: true, text: `Validate finished — configuration is valid${result.warningCount > 0 ? ` (${result.warningCount} warnings)` : ''}.` }
-        : { ok: false, text: `Validate finished — ${result.errorCount} error(s).` }
+      if (result.timedOut) return { ok: false, text: 'Command timed out before finishing.' }
+      if (result.exitCode === 0) return { ok: true, text: 'Validate finished — configuration is valid.' }
+      return { ok: false, text: `Validate failed (exit code ${result.exitCode}).` }
     case 'init-upgrade':
       if (result.timedOut) return { ok: false, text: 'Init timed out before finishing.' }
       if (result.exitCode === 0) return { ok: true, text: 'Init finished — dependencies upgraded to the latest allowed versions.' }
@@ -213,18 +220,23 @@ function logStatusText(result: TfRunResult): { ok: boolean; text: string } {
 
 type ConsoleEntry = { expr: string; output: string; ok: boolean }
 
-const TerraformPanel = ({ dirPath, projectDir = null, onLoadProject, onFmtApplied, logOpen = false, onToggleLog }: TerraformPanelProps): ReactElement => {
+const TerraformPanel = ({ dirPath, projectDir = null, onLoadProject, onFmtApplied, logOpen = false, onToggleLog, onOpenLog, findAvailable = false, findActive = false, onToggleFind }: TerraformPanelProps): ReactElement => {
   const [running, setRunning] = useState<TfCommand | null>(null)
   const [result, setResult] = useState<TfRunResult | null>(null)
   const [error, setError] = useState('')
+  const [planJson, setPlanJson] = useState<string | null>(null)
+  const [planJsonBusy, setPlanJsonBusy] = useState(false)
+  const [planJsonError, setPlanJsonError] = useState('')
+  const planJsonGeneration = useRef(0)
 
   // The Version result is informational — it auto-hides after a short while.
   const [versionDismissed, setVersionDismissed] = useState(false)
   const versionTimerRef = useRef<number | null>(null)
 
-  // Live command output for the Log view (accumulated SSE chunks).
+  // Live command output for the Log view (accumulated SSE chunks). Shown
+  // verbatim — exactly what terraform prints to a shell.
   const [logText, setLogText] = useState('')
-  const logRef = useRef<HTMLPreElement | null>(null)
+  const logRef = useRef<HTMLElement | null>(null)
 
   // Keep the live log pinned to the bottom while new output arrives.
   useEffect(() => {
@@ -614,6 +626,9 @@ const TerraformPanel = ({ dirPath, projectDir = null, onLoadProject, onFmtApplie
     setRunning(command)
     setError('')
     setResult(null)
+    planJsonGeneration.current += 1
+    setPlanJson(null)
+    setPlanJsonError('')
     setApplyReady(false)
     setDestroyReady(false)
     // A new command supersedes a stale install error.
@@ -624,6 +639,8 @@ const TerraformPanel = ({ dirPath, projectDir = null, onLoadProject, onFmtApplie
     }
     setVersionDismissed(false)
     setLogText('')
+    // Open the Log view so output streams in real time, like a terminal.
+    onOpenLog?.()
     try {
       const res = await new Promise<TfRunResult>((resolve, reject) => {
         runTerraformStream(
@@ -673,6 +690,27 @@ const TerraformPanel = ({ dirPath, projectDir = null, onLoadProject, onFmtApplie
       setError(err instanceof Error ? err.message : 'Terraform command failed')
     } finally {
       setRunning(null)
+    }
+  }
+
+  const showPlanJson = async () => {
+    if (!dirPath || result?.command !== 'plan' || !result.previewId || planJsonBusy) return
+    if (planJson !== null) {
+      setPlanJson(null)
+      return
+    }
+    const confirmed = window.confirm('Raw Terraform plan JSON can contain sensitive values in plain text. Show it on this device?')
+    if (!confirmed) return
+    setPlanJsonBusy(true)
+    setPlanJsonError('')
+    const generation = planJsonGeneration.current
+    try {
+      const preview = await getTerraformPlanJson(dirPath, result.previewId)
+      if (generation === planJsonGeneration.current) setPlanJson(preview.rawJson)
+    } catch (err) {
+      if (generation === planJsonGeneration.current) setPlanJsonError(err instanceof Error ? err.message : 'Could not load plan JSON')
+    } finally {
+      setPlanJsonBusy(false)
     }
   }
 
@@ -936,7 +974,7 @@ const TerraformPanel = ({ dirPath, projectDir = null, onLoadProject, onFmtApplie
         <button onClick={() => void run('validate')} disabled={running !== null}>
           Validate
         </button>
-        <button onClick={() => void run('plan-json')} disabled={running !== null}>
+        <button onClick={() => void run('plan')} disabled={running !== null}>
           Plan
         </button>
         <button
@@ -1094,6 +1132,15 @@ const TerraformPanel = ({ dirPath, projectDir = null, onLoadProject, onFmtApplie
         >
           {driftBadgeText}
         </button>
+        {onToggleFind !== undefined && findAvailable && (
+          <button
+            onClick={onToggleFind}
+            className={`tf-log-toggle${findActive ? ' active' : ''}`}
+            title="Search the open file (Ctrl+F)"
+          >
+            Find
+          </button>
+        )}
         <label className="tf-ws-label" title="Re-check for drift automatically while this panel is open">
           auto
           <select
@@ -1230,7 +1277,7 @@ const TerraformPanel = ({ dirPath, projectDir = null, onLoadProject, onFmtApplie
       {running && (
         <p className="tf-running">
           Running terraform {runningLabel(running)}…
-          {(running === 'plan-json' || running === 'drift' || running === 'plan-file' || running === 'plan-file-destroy') &&
+          {(running === 'plan' || running === 'drift' || running === 'plan-file' || running === 'plan-file-destroy') &&
             ' this can take a while.'}
         </p>
       )}
@@ -1250,7 +1297,15 @@ const TerraformPanel = ({ dirPath, projectDir = null, onLoadProject, onFmtApplie
           {logStatus !== null && (
             <p className={`tf-status ${logStatus.ok ? 'ok' : 'error'}`}>{logStatus.text}</p>
           )}
-          <pre ref={logRef} className="tf-output tf-live-log">
+          {result !== null && 'output' in result && /No valid credential sources found|failed to refresh cached credentials/i.test(result.output) && (
+            <p className="tf-status error">AWS credentials are unavailable. Check your local credential chain or open Login and authenticate AWS; unlocking the store alone does not start a cloud session.</p>
+          )}
+          <pre
+            ref={el => {
+              logRef.current = el
+            }}
+            className="tf-output tf-live-log"
+          >
             {logText !== ''
               ? logText
               : running !== null
@@ -1261,14 +1316,19 @@ const TerraformPanel = ({ dirPath, projectDir = null, onLoadProject, onFmtApplie
           </pre>
           {!running && result !== null && (
             <div className="tf-toolbar tf-actions">
-              {result.command === 'plan-json' && result.exitCode === 0 && !result.timedOut && planHasChanges(result.summary) && (
+              {result.command === 'plan' && result.exitCode === 0 && !result.timedOut && planHasChanges(result.summary) && (
                 <button className="danger" onClick={startApplyFlow}>
                   Save plan &amp; prepare apply…
                 </button>
               )}
-              {result.command === 'plan-json' && result.exitCode === 0 && !result.timedOut && costAvailable === true && (
+              {result.command === 'plan' && result.exitCode === 0 && !result.timedOut && costAvailable === true && (
                 <button onClick={toggleCost} title="Estimate the monthly cost of this configuration with Infracost">
                   Estimate costs
+                </button>
+              )}
+              {result.command === 'plan' && result.exitCode === 0 && result.previewId && (
+                <button onClick={() => void showPlanJson()} disabled={planJsonBusy} title="Raw JSON may include sensitive values">
+                  {planJsonBusy ? 'Loading JSON…' : planJson !== null ? 'Hide raw JSON' : 'View raw JSON…'}
                 </button>
               )}
               {result.command === 'plan-file' && applyReady && (
@@ -1288,12 +1348,22 @@ const TerraformPanel = ({ dirPath, projectDir = null, onLoadProject, onFmtApplie
                 </>
               )}
               {result.command === 'apply' && result.exitCode === 0 && !result.timedOut && (
-                <button onClick={() => void run('plan-json')}>Verify with a new plan</button>
+                <button onClick={() => void run('plan')}>Verify with a new plan</button>
               )}
               {(result.command === 'state-show' || result.command === 'import' || result.command === 'state-mv' || result.command === 'state-rm') && (
                 <button onClick={() => void run('state-list')}>Refresh state list</button>
               )}
             </div>
+          )}
+          {planJsonError !== '' && <p className="tf-status error">{planJsonError}</p>}
+          {result?.command === 'plan' && result.exitCode === 0 && !result.previewId && (
+            <p className="tf-status">Raw plan JSON is unavailable for this run.</p>
+          )}
+          {planJson !== null && (
+            <>
+              <p className="tf-status">Raw plan JSON can include sensitive values. Avoid sharing this output.</p>
+              <pre className="tf-output">{planJson}</pre>
+            </>
           )}
 
           {/* State surgery controls — reachable from the Log view only */}

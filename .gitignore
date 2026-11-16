@@ -35,3 +35,9 @@ __pycache__/
 # Private pilot build output
 .pilot-build/
 release/
+
+# kilo
+.kilo/skills/skill.md
+.kilo/spec/spec.md
+.gitignore
+.kilo/test/test.md

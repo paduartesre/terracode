@@ -289,6 +289,49 @@ body.sb-resizing {
   border-radius: 0;
 }
 
+/* Read-only file view with a line-number gutter. One row per logical line so
+   the number stays glued to its first visual line even when soft-wrap reflows
+   it (VS Code behavior). The number is sticky on horizontal scroll. */
+.file-content-rows {
+  font-family: var(--user-mono, var(--mono));
+  color: var(--text-h);
+  background: var(--code-bg);
+  border-radius: 6px;
+  padding: 1rem 0;
+  text-align: left;
+}
+
+.fc-row {
+  padding-left: 1rem;
+  padding-right: 1rem;
+}
+
+.content-body.wrap-off .file-content-rows {
+  overflow-x: auto;
+}
+
+.content-body.wrap-off .fc-code {
+  white-space: pre;
+}
+
+.fc-ln {
+  position: sticky;
+  left: 0;
+  display: inline-block;
+  /* width follows the digit count of the last line (set as --fc-digits) */
+  min-width: calc(var(--fc-digits, 3) * 1ch);
+  text-align: right;
+  margin-right: 0.75rem;
+  opacity: 0.45;
+  user-select: none;
+  background: var(--code-bg);
+}
+
+.fc-code {
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 /* Theme override support (settings drawer): every dark-mode block below is scoped
    to :root:not(.theme-light) so a forced light theme suppresses it, and duplicated
    under .theme-dark for the forced dark override. See index.css for the variables. */
@@ -509,23 +552,8 @@ body.sb-resizing {
   opacity: 1;
 }
 
-.find-bar button {
-  padding: 0.3rem 0.6rem;
-  font-size: 12px;
-  background: #e2e8f0;
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  cursor: pointer;
-}
-
-.find-bar button:hover:not(:disabled) {
-  background: #cbd5e1;
-}
-
-.find-bar button:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
+/* The find-bar buttons share the toolbar-button look (see the .tf-toolbar
+   button groups below, including the dark-theme overrides). */
 
 .editor-status .find-toggle {
   padding: 0.1rem 0.4rem;
@@ -884,6 +912,9 @@ body.sb-resizing {
 /* Terraform operations panel */
 .tf-panel {
   margin-bottom: 1rem;
+  /* #root carries a Vite-template text-align:center — the command log and all
+     status lines must stay left-aligned like code. */
+  text-align: left;
 }
 
 .tf-toolbar {
@@ -917,7 +948,12 @@ body.sb-resizing {
   margin-right: 0.25rem;
 }
 
-.tf-toolbar button {
+/* The Find toggle (drift row) and the find-bar buttons share the
+   toolbar-button look, so they are folded into every rule below — including
+   the dark-theme background overrides. */
+.tf-toolbar button,
+.tf-drift-row .tf-log-toggle,
+.find-bar button {
   padding: 0.3rem 0.8rem;
   font-size: 13px;
   background: #e2e8f0;
@@ -927,11 +963,15 @@ body.sb-resizing {
   cursor: pointer;
 }
 
-.tf-toolbar button:hover:not(:disabled) {
+.tf-toolbar button:hover:not(:disabled),
+.tf-drift-row .tf-log-toggle:hover:not(:disabled),
+.find-bar button:hover:not(:disabled) {
   background: #cbd5e1;
 }
 
-.tf-toolbar button:disabled {
+.tf-toolbar button:disabled,
+.tf-drift-row .tf-log-toggle:disabled,
+.find-bar button:disabled {
   opacity: 0.5;
   cursor: default;
 }
@@ -1083,9 +1123,11 @@ body.sb-resizing {
   flex-shrink: 0;
 }
 
-/* Active state for the Log toggle button (kept on hover too). */
+/* Active state for the Log toggle and Find buttons (kept on hover too). */
 .tf-toolbar button.active,
-.tf-toolbar button.active:hover:not(:disabled) {
+.tf-toolbar button.active:hover:not(:disabled),
+.tf-drift-row .tf-log-toggle.active,
+.tf-drift-row .tf-log-toggle.active:hover:not(:disabled) {
   background: var(--accent);
   border-color: var(--accent-border);
   color: #fff;
@@ -1322,13 +1364,17 @@ body.sb-resizing {
 @media (prefers-color-scheme: dark) {
   :root:not(.theme-light) .tf-toolbar button,
   :root:not(.theme-light) .tf-changed-list button,
-  :root:not(.theme-light) .tf-state-list button {
+  :root:not(.theme-light) .tf-state-list button,
+  :root:not(.theme-light) .tf-drift-row .tf-log-toggle,
+  :root:not(.theme-light) .find-bar button {
     background: #2d333b;
   }
 
   :root:not(.theme-light) .tf-toolbar button:hover:not(:disabled),
   :root:not(.theme-light) .tf-changed-list button.active,
-  :root:not(.theme-light) .tf-state-list button:hover {
+  :root:not(.theme-light) .tf-state-list button:hover,
+  :root:not(.theme-light) .tf-drift-row .tf-log-toggle:hover:not(:disabled),
+  :root:not(.theme-light) .find-bar button:hover:not(:disabled) {
     background: #444c56;
   }
 
@@ -1339,13 +1385,15 @@ body.sb-resizing {
 
 .theme-dark .tf-toolbar button,
 .theme-dark .tf-changed-list button,
-.theme-dark .tf-state-list button {
+.theme-dark .tf-state-list button,
+.theme-dark .find-bar button {
   background: #2d333b;
 }
 
 .theme-dark .tf-toolbar button:hover:not(:disabled),
 .theme-dark .tf-changed-list button.active,
-.theme-dark .tf-state-list button:hover {
+.theme-dark .tf-state-list button:hover,
+.theme-dark .find-bar button:hover:not(:disabled) {
   background: #444c56;
 }
 
@@ -1836,6 +1884,8 @@ body.sb-resizing {
   border-color: #d64545;
   color: #d64545;
 }
+
+
 
 /* Dependency graph view (terraform graph) */
 .tf-graph-section {
@@ -2622,9 +2672,8 @@ body.sb-resizing {
     color: #ffa657;
   }
 
-  :root:not(.theme-light) .git-status.ok {
-    color: #7ee787;
-  }
+  /* .git-status.ok keeps the base dark green (#0a7d33): the git panel stays on
+     a white sidebar background in dark themes, so a light green is invisible. */
 }
 
 .theme-dark .git-panel {
@@ -2653,9 +2702,8 @@ body.sb-resizing {
   color: #ffa657;
 }
 
-.theme-dark .git-status.ok {
-  color: #7ee787;
-}
+/* .git-status.ok keeps the base dark green (#0a7d33): the git panel stays on
+   a white sidebar background in dark themes, so a light green is invisible. */
 
 @media (prefers-color-scheme: dark) {
   :root:not(.theme-light) .git-input {

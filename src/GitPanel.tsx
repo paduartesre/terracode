@@ -27,6 +27,25 @@ const MAX_RENDERED_FILES = 300
 
 // Stable identity of a status entry (renames carry both paths).
 const fileKey = (e: GitStatusEntry): string => (e.origPath ? `${e.origPath}→${e.path}` : e.path)
+const entryPaths = (e: GitStatusEntry): string[] => (e.origPath ? [e.origPath, e.path] : [e.path])
+
+// Git may replace an untracked directory with individual entries (or collapse
+// those entries again). Remember the most specific choice for each path.
+function isEntryExcluded(entry: GitStatusEntry, choices: Map<string, boolean>): boolean {
+  return entryPaths(entry).some(path => {
+    let selected = true
+    let matchedLength = -1
+    for (const [choice, include] of choices) {
+      if ((choice === path || (choice.endsWith('/') && path.startsWith(choice))) && choice.length > matchedLength) {
+        selected = include
+        matchedLength = choice.length
+      }
+    }
+    if (!selected) return true
+    // A collapsed directory must not commit a child the user excluded.
+    return path.endsWith('/') && [...choices].some(([choice, include]) => !include && choice.startsWith(path))
+  })
+}
 
 type GitPanelProps = {
   dirPath: string
@@ -47,6 +66,18 @@ type OpStatus = {
 
 const PLATFORM_LABEL: Record<string, string> = { github: 'GitHub', gitlab: 'GitLab' }
 
+// Git output that means "no usable credentials" — the stored-credentials tip
+// only helps in this case, not on conflicts or rejections.
+const AUTH_FAIL_RE = /could not read Username|Authentication failed|terminal prompts disabled|invalid credentials|403 (Unauthorized|Forbidden)/i
+
+function withAuthHint(text: string, output?: string): { text: string; output?: string } {
+  if (!output || !AUTH_FAIL_RE.test(output)) return { text, output }
+  return {
+    text,
+    output: `${output}\n\nTip: store your GitHub/GitLab token in Settings → Git credentials and unlock the credential store — push/pull/fetch will then authenticate automatically.`
+  }
+}
+
 const GitPanel = ({ dirPath, isRepo, entries, refreshKey, onRefresh, onOpenCommit, openCommitHash }: GitPanelProps): ReactElement => {
   const [branches, setBranches] = useState<GitBranches | null>(null)
   const [remotes, setRemotes] = useState<{ remotes: GitRemote[] } | null>(null)
@@ -66,13 +97,13 @@ const GitPanel = ({ dirPath, isRepo, entries, refreshKey, onRefresh, onOpenCommi
   const [message, setMessage] = useState('')
   const [committing, setCommitting] = useState(false)
 
-  // Selective commit: paths the user unchecked (empty set = everything selected).
-  const [unselected, setUnselected] = useState<Set<string>>(new Set())
+  // Explicit path choices; an empty map means everything is selected.
+  const [choices, setChoices] = useState<Map<string, boolean>>(new Map())
 
-  // A fresh status fetch means a new selection baseline: select all again.
+  // Keep exclusions across status refreshes, but reset them for another folder.
   useEffect(() => {
-    setUnselected(new Set()) // eslint-disable-line react/set-state-in-effect
-  }, [dirPath, refreshKey])
+    setChoices(new Map()) // eslint-disable-line react/set-state-in-effect
+  }, [dirPath])
 
   // New-branch form.
   const [newBranchOpen, setNewBranchOpen] = useState(false)
@@ -143,35 +174,47 @@ const GitPanel = ({ dirPath, isRepo, entries, refreshKey, onRefresh, onOpenCommi
   }
 
   // Explicit pathspecs for a selective commit; renames contribute both paths.
-  const selectedSpecs = entries
-    .filter(e => !unselected.has(fileKey(e)))
+  const selectedEntries = entries.filter(e => !isEntryExcluded(e, choices))
+  const selectedSpecs = selectedEntries
     .flatMap(e => (e.origPath ? [e.origPath, e.path] : [e.path]))
-  const selectedCount = entries.length - unselected.size
+  const selectedCount = selectedEntries.length
+  const unselectedCount = entries.length - selectedCount
   // The all-inclusive path sends no file list, so the cap only bites on subsets.
-  const overCap = unselected.size > 0 && selectedSpecs.length > SELECTIVE_COMMIT_CAP
+  const hasExclusions = [...choices.values()].some(include => !include)
+  const overCap = hasExclusions && selectedSpecs.length > SELECTIVE_COMMIT_CAP
 
-  const toggleFile = (key: string) => {
-    setUnselected(prev => {
-      const next = new Set(prev)
-      if (next.has(key)) next.delete(key)
-      else next.add(key)
-      return next
+  const toggleFile = (entry: GitStatusEntry) => {
+    setChoices(prev => {
+      const next = new Map(prev)
+      const include = isEntryExcluded(entry, prev)
+      for (const path of entryPaths(entry)) {
+        if (path.endsWith('/')) {
+          for (const choice of next.keys()) {
+            if (choice.startsWith(path)) next.delete(choice)
+          }
+        }
+        next.set(path, include)
+      }
+      // With no exclusions there is no need for an explicit commit file list.
+      return [...next.values()].some(value => !value) ? next : new Map()
     })
   }
 
   const handleCommit = async () => {
     const msg = message.trim()
-    if (!msg || committing || overCap) return
+    if (!msg || committing || overCap || selectedCount === 0) return
     setCommitting(true)
     setOpStatus(null)
     try {
       let files: string[] | undefined
-      if (unselected.size > 0) {
-        const ok = window.confirm(
-          `Commit only ${selectedCount} of ${entries.length} file(s)?\n` +
-            `${unselected.size} change(s) will not be included in this commit.`,
-        )
-        if (!ok) return
+      if (hasExclusions) {
+        if (unselectedCount > 0) {
+          const ok = window.confirm(
+            `Commit only ${selectedCount} of ${entries.length} file(s)?\n` +
+              `${unselectedCount} change(s) will not be included in this commit.`,
+          )
+          if (!ok) return
+        }
         files = selectedSpecs
       }
       const result = await gitCommit(dirPath, msg, files)
@@ -193,6 +236,7 @@ const GitPanel = ({ dirPath, isRepo, entries, refreshKey, onRefresh, onOpenCommi
     if (!ref || ref === branches?.current) return
     await runOp('switch', async () => {
       await checkoutBranch(dirPath, ref)
+      setChoices(new Map())
       setRebaseInProgress(false)
       setOpStatus({ kind: 'ok', text: `Switched to ${ref}` })
       onRefresh()
@@ -204,6 +248,7 @@ const GitPanel = ({ dirPath, isRepo, entries, refreshKey, onRefresh, onOpenCommi
     if (!name || busy !== null) return
     await runOp('create branch', async () => {
       await createBranch(dirPath, name, { switch: true })
+      setChoices(new Map())
       setNewBranchOpen(false)
       setNewBranchName('')
       setRebaseInProgress(false)
@@ -271,7 +316,7 @@ const GitPanel = ({ dirPath, isRepo, entries, refreshKey, onRefresh, onOpenCommi
       const result = await gitPush(dirPath)
       onRefresh()
       if (result.success) setOpStatus({ kind: 'ok', text: 'Pushed to origin', output: result.output })
-      else setOpStatus({ kind: 'error', text: 'Push failed — check your credentials/remote', output: result.output })
+      else setOpStatus({ kind: 'error', ...withAuthHint('Push failed — check your credentials/remote', result.output) })
     })
   }
 
@@ -281,7 +326,7 @@ const GitPanel = ({ dirPath, isRepo, entries, refreshKey, onRefresh, onOpenCommi
       onRefresh()
       if (result.success) setOpStatus({ kind: 'ok', text: 'Pulled from origin', output: result.output })
       else if (result.conflicted) setOpStatus({ kind: 'error', text: 'Pull stopped with conflicts — resolve and commit.', output: result.output })
-      else setOpStatus({ kind: 'error', text: 'Pull failed', output: result.output })
+      else setOpStatus({ kind: 'error', ...withAuthHint('Pull failed', result.output) })
     })
   }
 
@@ -290,7 +335,7 @@ const GitPanel = ({ dirPath, isRepo, entries, refreshKey, onRefresh, onOpenCommi
       const result = await gitFetch(dirPath)
       onRefresh()
       if (result.success) setOpStatus({ kind: 'ok', text: 'Fetched all remotes', output: result.output })
-      else setOpStatus({ kind: 'error', text: 'Fetch failed', output: result.output })
+      else setOpStatus({ kind: 'error', ...withAuthHint('Fetch failed', result.output) })
     })
   }
 
@@ -333,6 +378,12 @@ const GitPanel = ({ dirPath, isRepo, entries, refreshKey, onRefresh, onOpenCommi
           Initial branch name
         </label>
         <input id="init-branch" className="git-input" value={initBranch} onChange={e => setInitBranch(e.target.value)} />
+        {initRemoteUrl.trim() !== '' && (
+          <p className="git-note">
+            Push and pull will use the GitHub/GitLab credentials stored in Settings → Git credentials (unlock the store
+            first). Existing SSH or system credential setups keep working as before.
+          </p>
+        )}
         <button onClick={() => void handleInit()} disabled={busy !== null}>
           {busy ? 'Working…' : initRemoteUrl.trim() ? 'Initialize + add origin' : 'Initialize repository'}
         </button>
@@ -580,8 +631,8 @@ const GitPanel = ({ dirPath, isRepo, entries, refreshKey, onRefresh, onOpenCommi
           <div className="git-changed-files">
             <div className="git-changed-header">
               <span>{selectedCount} of {entries.length} selected</span>
-              {unselected.size > 0 && (
-                <button type="button" className="git-mini-btn" onClick={() => setUnselected(new Set())}>
+              {hasExclusions && (
+                <button type="button" className="git-mini-btn" onClick={() => setChoices(new Map())}>
                   Select all
                 </button>
               )}
@@ -592,7 +643,7 @@ const GitPanel = ({ dirPath, isRepo, entries, refreshKey, onRefresh, onOpenCommi
                 const key = fileKey(e)
                 return (
                   <label key={key} className="git-file-row">
-                    <input type="checkbox" checked={!unselected.has(key)} onChange={() => toggleFile(key)} />
+                    <input type="checkbox" checked={!isEntryExcluded(e, choices)} onChange={() => toggleFile(e)} />
                     {badge && <span className={`git-badge ${badge.cls}`}>{badge.letter}</span>}
                     <span className="git-file-path" title={e.origPath ? `${e.origPath} → ${e.path}` : e.path}>
                       {e.origPath ? `${e.origPath} → ${e.path}` : e.path}
@@ -625,11 +676,11 @@ const GitPanel = ({ dirPath, isRepo, entries, refreshKey, onRefresh, onOpenCommi
           <button
             className="git-commit-btn"
             onClick={() => void handleCommit()}
-            disabled={!message.trim() || committing || overCap}
+            disabled={!message.trim() || committing || overCap || selectedCount === 0}
           >
             {committing
               ? 'Committing…'
-              : unselected.size > 0
+              : unselectedCount > 0
                 ? `Commit ${selectedCount} of ${entries.length}`
                 : `Commit ${entries.length} change${entries.length === 1 ? '' : 's'}`}
           </button>

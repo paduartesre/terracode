@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactElement, type UIEvent } from 'react'
-import { highlightCode } from './highlight'
+import { escapeHtml, highlightCode } from './highlight'
 
 type FileEditorProps = {
   value: string
@@ -8,21 +8,23 @@ type FileEditorProps = {
   // rows in the overlay layout, so it is hidden while wrapping is on.
   wrap?: boolean
   onChange: (value: string) => void
+  // Find-bar open state is controlled by App so the toolbar "Find" button (next
+  // to the drift badge) can drive it from any view mode.
+  findOpen: boolean
+  onFindRequest: () => void // Ctrl+F in the textarea — always opens
+  onFindToggle: () => void // status-bar button
+  onFindClose: () => void // × / Esc
+  onToggleWrap?: () => void
 }
 
-function escapeHtml(text: string): string {
-  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-}
-
-const FileEditor = ({ value, filePath, wrap = false, onChange }: FileEditorProps): ReactElement => {
+const FileEditor = ({ value, filePath, wrap = false, onChange, findOpen, onFindRequest, onFindToggle, onFindClose, onToggleWrap }: FileEditorProps): ReactElement => {
   const preRef = useRef<HTMLPreElement>(null)
   const gutterRef = useRef<HTMLPreElement>(null)
   const taRef = useRef<HTMLTextAreaElement>(null)
   const findInputRef = useRef<HTMLInputElement>(null)
   const [cursor, setCursor] = useState({ line: 1, col: 1 })
 
-  // In-file search/replace state.
-  const [searchOpen, setSearchOpen] = useState(false)
+  // In-file search/replace state (the bar's open/closed state lives in App).
   const [query, setQuery] = useState('')
   const [replacement, setReplacement] = useState('')
 
@@ -30,8 +32,8 @@ const FileEditor = ({ value, filePath, wrap = false, onChange }: FileEditorProps
   // remounts this component when the open file changes.
 
   useEffect(() => {
-    if (searchOpen) findInputRef.current?.focus()
-  }, [searchOpen])
+    if (findOpen) findInputRef.current?.focus()
+  }, [findOpen])
 
   const matchCount = useMemo(
     () => (query === '' ? 0 : value.split(query).length - 1),
@@ -130,7 +132,7 @@ const FileEditor = ({ value, filePath, wrap = false, onChange }: FileEditorProps
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if ((e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'f') {
       e.preventDefault()
-      setSearchOpen(true)
+      onFindRequest()
       return
     }
     if (e.key === 'Tab') {
@@ -147,7 +149,7 @@ const FileEditor = ({ value, filePath, wrap = false, onChange }: FileEditorProps
 
   return (
     <div>
-      {searchOpen && (
+      {findOpen && (
         <div className="find-bar">
           <input
             ref={findInputRef}
@@ -157,7 +159,7 @@ const FileEditor = ({ value, filePath, wrap = false, onChange }: FileEditorProps
               if (e.key === 'Enter') findNext()
               else if (e.key === 'Escape') {
                 e.stopPropagation()
-                setSearchOpen(false)
+                onFindClose()
               }
             }}
             placeholder="Find"
@@ -171,20 +173,18 @@ const FileEditor = ({ value, filePath, wrap = false, onChange }: FileEditorProps
             onChange={e => setReplacement(e.target.value)}
             onKeyDown={e => {
               if (e.key === 'Enter') replaceOne()
+              else if (e.key === 'Escape') {
+                e.stopPropagation()
+                onFindClose()
+              }
             }}
             placeholder="Replace with"
             aria-label="Replace with"
           />
-          <button onClick={() => findNext()} disabled={query === ''}>
-            Next
-          </button>
-          <button onClick={replaceOne} disabled={query === ''}>
-            Replace
-          </button>
-          <button onClick={replaceAll} disabled={matchCount === 0}>
-            All
-          </button>
-          <button title="Close find bar (Esc)" onClick={() => setSearchOpen(false)}>
+          <button onClick={() => findNext()}>Next</button>
+          <button onClick={replaceOne}>Replace</button>
+          <button onClick={replaceAll}>All</button>
+          <button title="Close find bar (Esc)" onClick={onFindClose}>
             ×
           </button>
         </div>
@@ -223,13 +223,18 @@ const FileEditor = ({ value, filePath, wrap = false, onChange }: FileEditorProps
           Ln {cursor.line}, Col {cursor.col}
         </span>
         <span>{totalLines} lines</span>
-        {wrap && (
-          <span title="Line numbers are hidden while word wrap is on">
-            wrap on — line numbers hidden
-          </span>
+        {onToggleWrap !== undefined && (
+          <button
+            type="button"
+            className={`find-toggle${wrap ? ' active' : ''}`}
+            onClick={onToggleWrap}
+            title={wrap ? 'Word wrap is on — line numbers are hidden. Click to turn wrap off and show them.' : 'Click to soft-wrap long lines (hides the line-number gutter).'}
+          >
+            {wrap ? 'wrap on' : 'wrap off'}
+          </button>
         )}
-        {!searchOpen && (
-          <button className="find-toggle" onClick={() => setSearchOpen(true)}>
+        {!findOpen && (
+          <button className="find-toggle" onClick={onFindToggle}>
             Find (Ctrl+F)
           </button>
         )}

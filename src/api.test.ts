@@ -6,7 +6,8 @@ import {
   listTfVarFiles, getCloudStatus, cloudCredentialAction, cloudLogin, cloudLogout,
   getGitStatus, getGitFileDiff, getGitLog, getGitCommitDiff, gitCommit,
   getGitBranches, getGitRemotes, createBranch, checkoutBranch, mergeBranch,
-  rebaseOnto, rebaseStep, initRepo, gitPush, gitPull, gitFetch
+  rebaseOnto, rebaseStep, initRepo, gitPush, gitPull, gitFetch,
+  getGitCredentialStatus, testGitCredentials
 } from './api'
 
 const API_BASE = 'http://localhost:3001'
@@ -316,6 +317,15 @@ describe('API Layer', () => {
       )
     })
 
+    it('preserves an explicitly empty file list', async () => {
+      mockFetch({ committed: false })
+      await gitCommit('/root', 'test message', [])
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        `${API_BASE}/api/git/commit`,
+        expect.objectContaining({ body: JSON.stringify({ path: '/root', message: 'test message', files: [] }) })
+      )
+    })
+
     it('getGitBranches should fetch branches', async () => {
       mockFetch({ isRepo: true, current: 'main', branches: ['main', 'dev'] })
       const result = await getGitBranches('/root')
@@ -440,6 +450,48 @@ describe('API Layer', () => {
         body: null
       } as any)
       await expect(listDir('/root')).rejects.toThrow('Request failed (502)')
+    })
+  })
+
+  describe('Git Credentials', () => {
+    it('getGitCredentialStatus should fetch the git credential subset', async () => {
+      mockFetch({ exists: true, providers: ['github'], unlocked: false })
+      const result = await getGitCredentialStatus()
+      expect(result).toEqual({ exists: true, providers: ['github'], unlocked: false })
+      expect(globalThis.fetch).toHaveBeenCalledWith(`${API_BASE}/api/git/credentials`)
+    })
+
+    it('getGitCredentialStatus should pass through stored metadata', async () => {
+      mockFetch({
+        exists: true,
+        providers: ['github'],
+        unlocked: false,
+        stored: { github: { username: 'octo', host: 'github.com', hasToken: true } }
+      })
+      const result = await getGitCredentialStatus()
+      expect(result.stored?.github).toEqual({ username: 'octo', host: 'github.com', hasToken: true })
+    })
+
+    it('testGitCredentials should POST provider with inline fields', async () => {
+      mockFetch({ ok: true, provider: 'github', host: 'github.com', identity: 'octo' })
+      const result = await testGitCredentials('github', { username: 'octo', token: 'tok', host: '' })
+      expect(result.identity).toBe('octo')
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        `${API_BASE}/api/git/credentials/test`,
+        expect.objectContaining({
+          method: 'POST',
+          body: JSON.stringify({ provider: 'github', username: 'octo', token: 'tok', host: '' })
+        })
+      )
+    })
+
+    it('testGitCredentials should omit inline fields when testing the stored entry', async () => {
+      mockFetch({ ok: true, provider: 'gitlab', host: 'gitlab.com', identity: 'gl' })
+      await testGitCredentials('gitlab')
+      expect(globalThis.fetch).toHaveBeenCalledWith(
+        `${API_BASE}/api/git/credentials/test`,
+        expect.objectContaining({ body: JSON.stringify({ provider: 'gitlab' }) })
+      )
     })
   })
 })

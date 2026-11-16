@@ -1,5 +1,6 @@
 import type { ReactElement } from 'react'
 import CloudCredentials from './CloudCredentials'
+import GitCredentials from './GitCredentials'
 import { clampZoom, MAX_ZOOM, MIN_ZOOM, type Settings, type ThemeMode } from './settings'
 
 type SettingsPanelProps = {
@@ -78,6 +79,9 @@ const SettingsPanel = ({ settings, onChange, onReset }: SettingsPanelProps): Rea
 
     {/* Cloud credential registration (global encrypted store; login happens from the Terraform panel). */}
     <CloudCredentials />
+
+    {/* Git credential registration (same global encrypted store; used by git push/pull/fetch). */}
+    <GitCredentials />
   </div>
 )
 

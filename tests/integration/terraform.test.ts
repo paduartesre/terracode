@@ -4,7 +4,6 @@ import request from 'supertest'
 const API_BASE = 'http://localhost:3001'
 
 describe('Terraform Integration Tests', () => {
-  let serverProcess: any
   // A path the live server actually allows (root containment rejects /tmp).
   let TEST_ROOT = ''
 
@@ -13,7 +12,7 @@ describe('Terraform Integration Tests', () => {
       const res = await request(API_BASE).get('/api/roots')
       expect(res.status).toBe(200)
       TEST_ROOT = res.body.roots?.[0] ?? ''
-    } catch (e) {
+    } catch {
       console.log('Server not running, skipping integration tests')
     }
   })

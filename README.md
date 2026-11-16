@@ -108,6 +108,8 @@ Load the directory printed in your terminal, then:
 8. Open **State** and **Outputs**. The `demo_message` output should show `TerraCode local demo`.
 9. Run **Plan** again. With the unchanged example, the expected result is no pending changes.
 
+After a successful **Plan**, **View raw JSON…** shows the JSON for that same plan. It is available for five minutes and may contain sensitive values in plain text; only open or share it in an appropriate setting. **Outputs** hides values marked sensitive by Terraform.
+
 To clean up this demo, first verify that the loaded directory is the demo directory. Select **Destroy…**, review its plan, and confirm **Apply destroy plan — delete resources**. This removes the resource from the demo's local state.
 
 In real projects, **Apply** and **Destroy** can create, modify, or delete infrastructure and incur costs. Check the directory, workspace, backend, and execution plan before confirming.
@@ -121,7 +123,7 @@ In real projects, **Apply** and **Destroy** can create, modify, or delete infras
 | Workspaces and variables | Check the selected workspace. Terraform automatically loads `terraform.tfvars` and `*.auto.tfvars`; other files can be selected in the interface. |
 | Graph and Drift | Inspect resource dependencies and check configuration against infrastructure. Cloud projects may require credentials. |
 | State and Outputs | Inspect resources and outputs. Importing, moving, or removing addresses are advanced state operations. |
-| Git | Check the branch, diffs, and selected files before committing. Push, pull, and fetch use the Git authentication available on your machine. |
+| Git | Check the branch, diffs, and selected files before committing. Push, pull, and fetch can use machine authentication or a token stored in Settings for the matching HTTPS host. |
 | Registry | Look up public modules using `namespace/name/provider`. Adding one writes a module block to `modules-registry.tf` in the loaded project. |
 | Settings | Adjust code zoom, word wrap, font, and theme; register cloud credentials when needed. |
 
@@ -140,6 +142,8 @@ For in-app login, install the relevant cloud CLI in the backend's environment. O
 Next, open **Login** in the Terraform panel, unlock the credential store if prompted, and authenticate with the provider. Registering credentials alone does not create an authenticated session. Projects already using a CLI/provider's standard credential chain may continue to depend on that local configuration.
 
 Registered credentials are stored encrypted at `~/.terraform-code/credentials.enc`. Unlocking holds a decrypted copy in server memory for a limited time, 15 minutes by default. **Logout** ends that provider's in-app session and stops its session credential injection into subsequent runs. It does not revoke provider keys or replace cloud CLI logout commands.
+
+To update cloud or Git credentials, unlock the store and select **Edit**. Existing identifiers are filled in; leave secret fields blank to keep their current values. Removing a provider from the store changes only the local credentials and does not delete cloud resources or remote accounts.
 
 Do not include credentials, state files, execution plans, or logs containing sensitive data in support requests.
 

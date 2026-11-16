@@ -108,6 +108,8 @@ Carregue na interface a pasta mostrada no terminal e siga esta ordem:
 8. Abra **State** e **Outputs**. O output `demo_message` deve exibir `TerraCode local demo`.
 9. Execute **Plan** novamente. Sem alterar o exemplo, o resultado esperado é nenhuma mudança pendente.
 
+Após um **Plan** bem-sucedido, **View raw JSON…** mostra o JSON do mesmo plano. Ele fica disponível por cinco minutos e pode conter valores sensíveis em texto legível; abra ou compartilhe apenas em um contexto adequado. **Outputs** oculta os valores marcados como sensíveis pelo Terraform.
+
 Para limpar somente essa demonstração, confirme primeiro que o diretório carregado é o do exemplo, use **Destroy…**, revise o plano e confirme **Apply destroy plan — delete resources**. Esse processo remove o recurso do state local da demonstração.
 
 Em projetos reais, **Apply** e **Destroy** podem criar, alterar ou excluir infraestrutura e gerar custos. Confira sempre o diretório, o workspace, o backend e o plano antes de confirmar.
@@ -121,7 +123,7 @@ Em projetos reais, **Apply** e **Destroy** podem criar, alterar ou excluir infra
 | Workspaces e variáveis | Confira o workspace ativo. Arquivos `terraform.tfvars` e `*.auto.tfvars` são carregados pelo Terraform; outros arquivos podem ser selecionados na interface. |
 | Graph e Drift | Explore dependências e verifique diferenças entre configuração e infraestrutura. Em projetos de nuvem, essas operações podem precisar de credenciais. |
 | State e Outputs | Inspecione recursos e outputs. Import, movimentação e remoção de endereços são operações avançadas sobre o state. |
-| Git | Confira branch, diffs e arquivos selecionados antes de fazer commit. Push, pull e fetch usam a autenticação Git disponível na máquina. |
+| Git | Confira branch, diffs e arquivos selecionados antes de fazer commit. Push, pull e fetch podem usar a autenticação da máquina ou um token salvo em Settings para o host HTTPS correspondente. |
 | Registry | Consulte módulos públicos por `namespace/name/provider`. A adição grava o bloco em `modules-registry.tf` no projeto carregado. |
 | Settings | Ajuste zoom, quebra de linha, fonte e tema; registre credenciais de nuvem quando precisar. |
 
@@ -140,6 +142,8 @@ Para usar o login integrado, instale a CLI do provedor no ambiente do backend. E
 Depois, abra **Login** no painel Terraform, desbloqueie o armazenamento se solicitado e autentique no provedor. O cadastro de credenciais, sozinho, não abre uma sessão autenticada. Um projeto que já utiliza a cadeia de autenticação padrão da CLI/provider pode continuar dependendo dessa configuração local.
 
 As credenciais cadastradas são armazenadas criptografadas em `~/.terraform-code/credentials.enc`. O desbloqueio mantém uma cópia em memória por tempo limitado; o padrão é 15 minutos. **Logout** encerra a sessão do provedor na aplicação e interrompe a injeção das credenciais daquela sessão nas próximas execuções. Isso não revoga chaves no provedor nem substitui comandos de logout das CLIs.
+
+Para atualizar credenciais de nuvem ou Git, desbloqueie o armazenamento e selecione **Edit**. Os identificadores existentes são preenchidos; deixe os campos secretos em branco para preservar os valores atuais. Remover um provedor do armazenamento altera apenas as credenciais locais e não exclui recursos de nuvem nem contas remotas.
 
 Não envie credenciais, arquivos de state, planos ou logs com dados sensíveis em pedidos de suporte.
 

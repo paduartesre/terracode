@@ -16,7 +16,7 @@ vi.mock('./api', () => ({
   replaceInFile: vi.fn()
 }))
 
-import { listDir, getGitStatus, listRoots } from './api'
+import { listDir, getGitStatus, listRoots, searchFiles, replaceInFile } from './api'
 
 describe('FileExplorer Component', () => {
   beforeEach(() => {
@@ -135,6 +135,26 @@ describe('FileExplorer Component', () => {
 
     await waitFor(() => {
       expect(screen.getByText(/Network error/)).toBeInTheDocument()
+    })
+  })
+
+  it('keeps a failed file visible in the replace summary', async () => {
+    ;(searchFiles as any).mockResolvedValue([
+      { name: 'a.txt', path: '/root/a.txt', isDirectory: false, mtimeMs: 1, matches: [{ line: 1, text: 'foo' }] },
+      { name: 'b.txt', path: '/root/b.txt', isDirectory: false, mtimeMs: 2, matches: [{ line: 3, text: 'foo' }] }
+    ])
+    ;(replaceInFile as any)
+      .mockResolvedValueOnce({ replaced: 1, path: '/root/a.txt', mtimeMs: 1 })
+      .mockRejectedValueOnce(new Error('Content too large (limit 1024 KB)'))
+
+    render(<FileExplorer onSelectFile={vi.fn()} />)
+    fireEvent.change(screen.getByPlaceholderText(/Search files and contents/), { target: { value: 'foo' } })
+
+    const button = await screen.findByRole('button', { name: 'Replace in 2' })
+    fireEvent.click(button)
+
+    await waitFor(() => {
+      expect(screen.getByText('Replaced 1 occurrence in 1/2 file(s) — 1 failed')).toBeInTheDocument()
     })
   })
 })

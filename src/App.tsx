@@ -20,15 +20,37 @@ import {
   type GitFileDiff,
   type GitStatusResult
 } from './api'
-import { highlightCode } from './highlight'
+import { escapeHtml, highlightCode } from './highlight'
+import { findMatches } from './findInText'
 import { clampZoom, clearSettings, DEFAULT_SETTINGS, loadSettings, MAX_ZOOM, MIN_ZOOM, storeSettings, type Settings } from './settings'
 import './App.css'
 
 const MAX_RECENT_FILES = 8
-const RECENT_STORAGE_KEY = 'app-test.recent-files'
-const OPEN_TABS_KEY = 'app-test.open-tabs'
+const RECENT_STORAGE_KEY = 'terracode.recent-files'
+const OPEN_TABS_KEY = 'terracode.open-tabs'
 const MAX_OPEN_TABS = 32
-const SIDEBAR_VIS_KEY = 'app-test.sidebar-visibility'
+const SIDEBAR_VIS_KEY = 'terracode.sidebar-visibility'
+
+// The read-only view renders one row per line (for the line-number gutter).
+// Above this many lines a single <pre> is far cheaper than thousands of rows,
+// so huge files fall back to it without numbers.
+const MAX_GUTTER_LINES = 2000
+
+// Read-only rows for the line-number gutter: one self-contained HTML fragment
+// per logical line (hljs never emits a tag spanning lines). Null when the file
+// is too large for row rendering — then the plain <pre> fallback is used. The
+// newline count avoids allocating the split array before the size check, so
+// huge files bail out cheaply on every render.
+function computeContentLines(loaded: { content: string; path: string } | null, highlighted: string | null): string[] | null {
+  if (loaded === null || loaded.content === '') return null
+  let newlines = 0
+  for (let i = 0; i < loaded.content.length; i++) {
+    if (loaded.content.charCodeAt(i) === 10) newlines++
+  }
+  if (newlines + 1 > MAX_GUTTER_LINES) return null
+  const html = highlighted !== null ? highlighted : escapeHtml(loaded.content)
+  return html.split('\n')
+}
 
 type SidebarVisibility = { left: boolean; right: boolean }
 
@@ -50,8 +72,8 @@ function loadSidebarVis(): SidebarVisibility {
 }
 
 // Sidebar widths (px) — user-adjustable by dragging each sidebar's inner edge.
-const LEFT_WIDTH_KEY = 'app-test.left-sidebar-width'
-const RIGHT_WIDTH_KEY = 'app-test.right-sidebar-width'
+const LEFT_WIDTH_KEY = 'terracode.left-sidebar-width'
+const RIGHT_WIDTH_KEY = 'terracode.right-sidebar-width'
 const DEFAULT_LEFT_WIDTH = 520
 const DEFAULT_RIGHT_WIDTH = 360
 const MIN_SIDEBAR_WIDTH = 240
@@ -213,16 +235,31 @@ function App() {
     return () => window.removeEventListener('keydown', handler)
   }, [toggleLeftSidebar, toggleRightSidebar])
 
-  // Terraform Log view: the path whose log is open (null = closed). Derived per
-  // active file, so switching files closes it automatically without an effect.
+  // Terraform Log view: the active file path, or an empty string when no file
+  // is open (null = closed). Switching files closes the view automatically.
   const [tfLogPath, setTfLogPath] = useState<string | null>(null)
-  const tfLogOpen = tfLogPath === activePath && activePath !== ''
+  const tfLogOpen = tfLogPath === activePath
+
+  // In-file search (Find): one open/closed state shared by the editor and the
+  // read-only view. Driven by the Find button next to the drift badge, the
+  // status-bar buttons, or Ctrl+F. Each view keeps its own query text.
+  const [fileFindOpen, setFileFindOpen] = useState(false)
+
+  // Read-only find: the query lives with the bar; the match position is keyed by
+  // (file, query) so a new search or file switch starts at the first match during
+  // render — no effect needed to reset state. The row container ref scrolls a
+  // matched line into view.
+  const [roQuery, setRoQuery] = useState('')
+  const [roNav, setRoNav] = useState<{ key: string; idx: number }>({ key: '', idx: 0 })
+  const roRowsRef = useRef<HTMLDivElement | null>(null)
+  const roKey = `${activePath}\u0000${roQuery}`
+  const roMatchIdx = roNav.key === roKey ? roNav.idx : 0
 
   // Terraform project folder explicitly loaded via the panel's picker (null =
   // follow the open file's folder). Persisted so a reload keeps the same project.
   const [tfProjectDir, setTfProjectDir] = useState<string | null>(() => {
     try {
-      return localStorage.getItem('app-test.tf-project-dir')
+      return localStorage.getItem('terracode.tf-project-dir')
     } catch {
       return null
     }
@@ -230,8 +267,8 @@ function App() {
 
   useEffect(() => {
     try {
-      if (tfProjectDir === null) localStorage.removeItem('app-test.tf-project-dir')
-      else localStorage.setItem('app-test.tf-project-dir', tfProjectDir)
+      if (tfProjectDir === null) localStorage.removeItem('terracode.tf-project-dir')
+      else localStorage.setItem('terracode.tf-project-dir', tfProjectDir)
     } catch {
       // storage unavailable; the project just won't persist across reloads
     }
@@ -366,6 +403,17 @@ function App() {
   const errorActive = active?.error ?? ''
   const commitActive = commitView !== null || commitLoading
 
+  // Read-only view: plain file content on screen (no diff/review overlay).
+  const readOnlyView =
+    !commitActive &&
+    active !== null &&
+    active.loaded !== null &&
+    !loadingActive &&
+    errorActive === '' &&
+    !active.editing &&
+    active.gitDiff === null &&
+    active.loaded.content !== ''
+
   // Effective Terraform working directory: the explicitly loaded project wins;
   // otherwise follow the open file's folder (null when neither exists — the
   // panel then offers to load a project). The key remounts the panel per dir so
@@ -442,7 +490,7 @@ function App() {
       const t = tabsRef.current.find(x => x.path === path)
       if (!t) return
       if (isDirty(t) && !window.confirm('Discard unsaved changes?')) return
-      updateTab(path, { editing: false, reviewing: false })
+      updateTab(path, { editing: false, reviewing: false, error: '' })
     },
     [updateTab],
   )
@@ -451,7 +499,7 @@ function App() {
     (path: string) => {
       const t = tabsRef.current.find(x => x.path === path)
       if (!t || !window.confirm('Discard your edits and revert to the saved version?')) return
-      updateTab(path, { draft: t.loaded?.content ?? '', reviewing: false })
+      updateTab(path, { draft: t.loaded?.content ?? '', reviewing: false, error: '' })
     },
     [updateTab],
   )
@@ -465,6 +513,7 @@ function App() {
         const result = await saveFileContent(t.loaded.path, t.draft, t.loaded.mtimeMs)
         updateTab(path, {
           loaded: { path: result.path, content: t.draft, mtimeMs: result.mtimeMs },
+          error: '',
           editing: false,
           reviewing: false,
           saveState: 'saved',
@@ -653,6 +702,48 @@ function App() {
   // render is cheap enough to skip manual memoization.
   const highlighted = active?.loaded ? highlightCode(active.loaded.content, active.loaded.path) : null
 
+  // Read-only rows for the line-number gutter (see computeContentLines). Like
+  // `highlighted` above it is recomputed per render — cheap for the ≤2000-line
+  // files that use it.
+  const contentLines = computeContentLines(active?.loaded ?? null, highlighted)
+
+  // Find is available whenever the open file's content can be searched: the
+  // read-only rows view (line-level scrolling needs the row layout) or the
+  // editor. Diff/review/commit views have no find target.
+  const findAvailable =
+    (readOnlyView && contentLines !== null) ||
+    (active !== null && active.editing && !loadingActive && errorActive === '' && active.gitDiff === null && !active.reviewing)
+
+  // Read-only search matches for the current query (line-level, see findInText).
+  // Recomputed per render like `highlighted` above — indexOf-based, and only
+  // runs while the read-only view is open with a non-empty query.
+  const roMatches = readOnlyView && roQuery !== '' && active?.loaded ? findMatches(active.loaded.content, roQuery) : []
+
+  // Scroll a read-only match into view. Called from the navigation handlers
+  // (rows are always rendered, so no effect is needed to wait for a re-render).
+  const scrollToRoMatch = (idx: number) => {
+    const m = roMatches[idx]
+    if (m !== undefined) {
+      ;(roRowsRef.current?.children[m.line] as HTMLElement | undefined)?.scrollIntoView({ block: 'nearest' })
+    }
+  }
+
+  // Global Ctrl/Cmd+F opens the file find bar (the editor's textarea handles its
+  // own shortcut and prevents this from double-firing). Skipped while typing in
+  // any other input so browser search stays available there.
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey || e.key.toLowerCase() !== 'f' || e.defaultPrevented) return
+      const t = e.target as HTMLElement | null
+      if (t !== null && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return
+      if (!findAvailable) return
+      e.preventDefault()
+      setFileFindOpen(true)
+    }
+    window.addEventListener('keydown', handler)
+    return () => window.removeEventListener('keydown', handler)
+  }, [findAvailable])
+
   // Shared inline style for both .content-body regions: code zoom plus the user's
   // font stack (as a CSS var consumed by the code viewer/editor rules).
   const contentBodyStyle = {
@@ -825,6 +916,10 @@ function App() {
               onFmtApplied={handleExternalChanges}
               logOpen={tfLogOpen}
               onToggleLog={() => setTfLogPath(p => (p === activePath ? null : activePath))}
+              onOpenLog={() => setTfLogPath(activePath)}
+              findAvailable={findAvailable}
+              findActive={fileFindOpen}
+              onToggleFind={() => setFileFindOpen(o => !o)}
             />
 
             {/* Code area — hidden while the Terraform Log view is open */}
@@ -861,16 +956,100 @@ function App() {
                 filePath={active.path}
                 wrap={settings.wordWrap}
                 onChange={d => updateTab(active.path, { draft: d })}
+                findOpen={fileFindOpen}
+                onFindRequest={() => setFileFindOpen(true)}
+                onFindToggle={() => setFileFindOpen(o => !o)}
+                onFindClose={() => setFileFindOpen(false)}
+                onToggleWrap={() => patchSettings({ wordWrap: !settings.wordWrap })}
               />
             )}
             {!loadingActive && errorActive === '' && active.loaded !== null && !active.editing && active.gitDiff === null && active.loaded.content !== '' && (
-              <pre className="file-content">
-                {highlighted !== null ? (
-                  <code dangerouslySetInnerHTML={{ __html: highlighted }} />
-                ) : (
-                  active.loaded.content
+              <>
+                {fileFindOpen && contentLines !== null && (
+                  <div className="find-bar">
+                    <input
+                      autoFocus
+                      value={roQuery}
+                      onChange={e => {
+                        const q = e.target.value
+                        setRoQuery(q)
+                        // Jump to the first match as the query is typed (IDE behavior).
+                        if (q !== '' && active?.loaded) {
+                          const ms = findMatches(active.loaded.content, q)
+                          if (ms.length > 0) {
+                            ;(roRowsRef.current?.children[ms[0].line] as HTMLElement | undefined)?.scrollIntoView({ block: 'nearest' })
+                          }
+                        }
+                      }}
+                      onKeyDown={e => {
+                        if (e.key === 'Enter') {
+                          if (roMatches.length > 0) {
+                            const next = (roMatchIdx + 1) % roMatches.length
+                            setRoNav({ key: roKey, idx: next })
+                            scrollToRoMatch(next)
+                          }
+                        } else if (e.key === 'Escape') {
+                          e.stopPropagation()
+                          setFileFindOpen(false)
+                        }
+                      }}
+                      placeholder="Find"
+                      aria-label="Find in file"
+                    />
+                    <span className={`find-count${roQuery !== '' && roMatches.length === 0 ? ' none' : ''}`}>
+                      {roQuery === '' ? '' : roMatches.length === 0 ? 'no matches' : `${(roMatchIdx % roMatches.length) + 1}/${roMatches.length}`}
+                    </span>
+                    <button
+                      onClick={() => {
+                        if (roMatches.length === 0) return
+                        const prev = (roMatchIdx - 1 + roMatches.length) % roMatches.length
+                        setRoNav({ key: roKey, idx: prev })
+                        scrollToRoMatch(prev)
+                      }}
+                    >
+                      Prev
+                    </button>
+                    <button
+                      onClick={() => {
+                        if (roMatches.length === 0) return
+                        const next = (roMatchIdx + 1) % roMatches.length
+                        setRoNav({ key: roKey, idx: next })
+                        scrollToRoMatch(next)
+                      }}
+                    >
+                      Next
+                    </button>
+                    <button title="Close find bar (Esc)" onClick={() => setFileFindOpen(false)}>
+                      ×
+                    </button>
+                  </div>
                 )}
-              </pre>
+                {contentLines !== null ? (
+                  // One row per logical line: the gutter number stays glued to its
+                  // first visual line even when soft-wrap reflows it. --fc-digits is
+                  // the DIGIT COUNT of the last line number (2 for 24 lines, 3 for
+                  // 100), which sizes the gutter column.
+                  <div className="file-content-rows" style={{ '--fc-digits': String(contentLines.length).length } as CSSProperties} ref={roRowsRef}>
+                    {contentLines.map((lineHtml, i) => (
+                      <div key={i} className="fc-row">
+                        <span className="fc-ln" aria-hidden="true">
+                          {i + 1}
+                        </span>
+                        <span className="fc-code" dangerouslySetInnerHTML={{ __html: lineHtml === '' ? '&nbsp;' : lineHtml }} />
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  // Very large files: plain pre, no gutter.
+                  <pre className="file-content">
+                    {highlighted !== null ? (
+                      <code dangerouslySetInnerHTML={{ __html: highlighted }} />
+                    ) : (
+                      active.loaded.content
+                    )}
+                  </pre>
+                )}
+              </>
             )}
             {!loadingActive && errorActive === '' && active.loaded !== null && !active.editing && active.gitDiff === null && active.loaded.content === '' && (
               <p className="file-status">(empty file)</p>
@@ -882,12 +1061,16 @@ function App() {
         ) : (
           // No open tabs: the Terraform panel still renders — with the loaded
           // project if there is one, otherwise in "load a project" mode.
-          <div className="content-body">
+          <div className={`content-body${tfLogOpen ? ' tf-log-mode' : ''}`}>
             <TerraformPanel
               key={`empty:${tfProjectDir ?? 'none'}#${tfRootNonce}`}
               dirPath={tfProjectDir}
               projectDir={tfProjectDir}
               onLoadProject={handleLoadTfProject}
+              onFmtApplied={handleExternalChanges}
+              logOpen={tfLogOpen}
+              onToggleLog={() => setTfLogPath(p => (p === activePath ? null : activePath))}
+              onOpenLog={() => setTfLogPath(activePath)}
             />
           </div>
         )}

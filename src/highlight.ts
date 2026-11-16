@@ -87,6 +87,12 @@ const EXT_TO_LANGUAGE: Record<string, string> = {
   hpp: 'cpp'
 }
 
+// Escape a raw text line for safe use in dangerouslySetInnerHTML (the read-only
+// view renders per-line rows; highlighted files already carry their own HTML).
+export function escapeHtml(text: string): string {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
 export function getLanguage(filePath: string): string | null {
   const name = filePath.split('/').pop() ?? ''
   const lower = name.toLowerCase()

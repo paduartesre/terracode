@@ -7,6 +7,9 @@ const http = require('node:http');
 const { getAsset, getAssetKeys } = require('node:sea');
 
 const args = process.argv.slice(2);
+if (args[0] === '--terracode-git-askpass') {
+  require('./git-askpass.cjs')(args[1]);
+} else {
 if (args.includes('--help')) {
   console.log('TerraCode Community Edition\nUsage: ./terracode [--project /absolute/project/path]\nOpen http://localhost:5173. Stop with Ctrl+C.\nRequires local Git/Terraform; no Node.js or npm needed.\nCopyright (c) 2026 Pedro Duarte. AGPL-3.0-only; see LICENSE and SOURCE.txt.');
   process.exit(0);
@@ -77,3 +80,4 @@ backend.listen(3001, '127.0.0.1', () => {
     console.log('Local execution only. Press Ctrl+C to stop.');
   });
 });
+}

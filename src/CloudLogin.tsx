@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useState, type ReactElement } from 'react'
-import { CLOUD_PROVIDER_LABELS, cloudLogin, cloudLogout, getCloudStatus, type CloudProvider, type CloudStatus } from './api'
+import { useEffect, useState, type ReactElement } from 'react'
+import { CLOUD_PROVIDER_LABELS, CREDENTIALS_CHANGED_EVENT, cloudLogin, cloudLogout, getCloudStatus, type CloudProvider } from './api'
+import { useCredentialStatus } from './useCredentialStatus'
 
 type CloudLoginProps = {
   onClose?: () => void
@@ -10,28 +11,33 @@ type CloudLoginProps = {
 // az / gcloud); while a session is active, terraform runs receive that
 // provider's credentials as environment variables.
 const CloudLogin = ({ onClose }: CloudLoginProps): ReactElement => {
-  const [status, setStatus] = useState<CloudStatus | null>(null)
+  const { status, refresh } = useCredentialStatus(getCloudStatus)
   const [passphrase, setPassphrase] = useState('')
   const [busyProvider, setBusyProvider] = useState<CloudProvider | null>(null)
   const [feedback, setFeedback] = useState<{ provider: CloudProvider; ok: boolean; text: string }[]>([])
 
-  const refresh = useCallback(() => {
-    getCloudStatus().then(setStatus).catch(() => setStatus(null))
-  }, [])
-
   useEffect(() => {
-    refresh()
-  }, [refresh])
+    const clearFeedback = () => setFeedback([])
+    window.addEventListener(CREDENTIALS_CHANGED_EVENT, clearFeedback)
+    window.addEventListener('focus', clearFeedback)
+    return () => {
+      window.removeEventListener(CREDENTIALS_CHANGED_EVENT, clearFeedback)
+      window.removeEventListener('focus', clearFeedback)
+    }
+  }, [])
 
   const handleLogin = async (provider: CloudProvider) => {
     if (busyProvider !== null || status === null) return
     setBusyProvider(provider)
     setFeedback(f => f.filter(x => x.provider !== provider))
     try {
-      const res = await cloudLogin(provider, passphrase.trim() !== '' ? passphrase.trim() : undefined)
-      setStatus(s => (s ? { ...s, unlocked: true, sessions: { ...s.sessions, [provider]: res.session } } : s))
+      await cloudLogin(provider, passphrase !== '' ? passphrase : undefined)
       setPassphrase('')
-      setFeedback(f => [{ provider, ok: true, text: `Logged in as ${res.session.identity}` }, ...f.filter(x => x.provider !== provider)])
+      const latest = await refresh()
+      const session = latest?.unlocked ? latest.sessions[provider] : undefined
+      if (session) {
+        setFeedback(f => [{ provider, ok: true, text: `Logged in as ${session.identity}` }, ...f.filter(x => x.provider !== provider)])
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Login failed'
       setFeedback(f => [{ provider, ok: false, text: message }, ...f.filter(x => x.provider !== provider)])
@@ -45,13 +51,10 @@ const CloudLogin = ({ onClose }: CloudLoginProps): ReactElement => {
     setBusyProvider(provider)
     try {
       await cloudLogout(provider)
-      setStatus(s => {
-        if (!s) return s
-        const sessions = { ...s.sessions }
-        delete sessions[provider]
-        return { ...s, sessions }
-      })
-      setFeedback(f => [{ provider, ok: true, text: 'Logged out — terraform runs no longer receive these credentials.' }, ...f.filter(x => x.provider !== provider)])
+      const latest = await refresh()
+      if (latest && (!latest.unlocked || !latest.sessions[provider])) {
+        setFeedback(f => [{ provider, ok: true, text: 'Logged out — terraform runs no longer receive these credentials.' }, ...f.filter(x => x.provider !== provider)])
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : 'Logout failed'
       setFeedback(f => [{ provider, ok: false, text: message }, ...f.filter(x => x.provider !== provider)])
@@ -95,8 +98,8 @@ const CloudLogin = ({ onClose }: CloudLoginProps): ReactElement => {
           )}
 
           <div className="cloud-login-list">
-            {status.providers.map(provider => {
-              const session = status.sessions[provider]
+            {status.providers.filter((p): p is CloudProvider => Object.hasOwn(CLOUD_PROVIDER_LABELS, p)).map(provider => {
+              const session = status.unlocked ? status.sessions[provider] : undefined
               const busy = busyProvider === provider
               return (
                 <div key={provider} className="cloud-login-row">
