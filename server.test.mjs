@@ -191,6 +191,11 @@ DOT
   show)
     if [ "$2" = '-json' ]; then
       [ -f "$3" ] || exit 1
+      # A FIFO lets tests hold the JSON rendering in flight (shared busy lock).
+      if [ -p .plan-gate ]; then
+        : > .plan-ready
+        read -r _ < .plan-gate
+      fi
       echo '{"format_version":"1.0","planned_values":{"outputs":{"secret":{"sensitive":true,"value":"dummy-plan-secret"}}}}'
       exit 0
     fi
@@ -294,6 +299,9 @@ exit 1
 //   .git/remotes-fixture   raw `remote -v` output ("<name>\t<url> (fetch|push)")
 //   .git/status-fixture    raw bytes emitted by `status --porcelain=v1 -z`
 //   .git/toplevel          optional override for `rev-parse --show-toplevel`
+//   .git/revparse-fail     when present, `rev-parse --show-toplevel` exits 128
+//   .git/revparse-slow     when present, `rev-parse --show-toplevel` sleeps first
+//   .git/op-gate-<op>      FIFO: hold mutating op <op> in flight (see below)
 //   .git/heads/<path>      content returned by `show HEAD:<path>`
 //   .git/add-log           one line per `add` invocation (args verbatim)
 //   .git/staged            marker: staged changes exist (created by add, cleared
@@ -327,6 +335,15 @@ if [ ! -d .git ]; then
   exit 128
 fi
 
+# A FIFO named op-gate-<op> lets tests hold that operation in flight while
+# asserting on the shared busy lock. The marker appears once the process is
+# blocked, which happens only after the server handler took the lock; the op-log
+# entry below is written only after the gate releases.
+if [ -p ".git/op-gate-$1" ]; then
+  : > .git/op-ready
+  read -r _ < ".git/op-gate-$1"
+fi
+
 # Record the auth-related env vars the server injected for network ops.
 log_env() {
   {
@@ -346,6 +363,9 @@ case "$1" in
   rev-parse)
     case "$2" in
       --show-toplevel)
+        # Markers let tests simulate a failed or slow root lookup.
+        if [ -f .git/revparse-fail ]; then echo 'fatal: could not determine the repository root' >&2; exit 128; fi
+        if [ -f .git/revparse-slow ]; then sleep 3; fi
         if [ -f .git/toplevel ]; then cat .git/toplevel; else printf '%s\\n' "$PWD"; fi
         ;;
       --abbrev-ref)
@@ -648,6 +668,24 @@ afterAll(async () => {
   if (stopFileWatcher !== null) stopFileWatcher()
   if (registryServer !== null) await new Promise(resolve => registryServer.close(resolve))
   fs.rmSync(base, { recursive: true, force: true })
+})
+
+// Resolves once `file` appears on disk. Synchronizes with gated fake processes
+// (readiness markers) instead of fixed sleeps.
+const waitForMarker = (file) => new Promise((resolve, reject) => {
+  let watcher
+  const timer = setTimeout(() => {
+    watcher?.close()
+    reject(new Error(`Timed out waiting for ${file}`))
+  }, 5000)
+  const check = () => {
+    if (!fs.existsSync(file)) return
+    clearTimeout(timer)
+    watcher.close()
+    resolve()
+  }
+  watcher = fs.watch(path.dirname(file), check)
+  check()
 })
 
 describe('GET /api/files', () => {
@@ -1622,6 +1660,126 @@ describe('POST /api/tf/run', () => {
     expect([a.status, b.status].sort()).toEqual([200, 409])
   })
 
+  it('refuses a git checkout in the project while terraform is running', async () => {
+    const dir = tfDir('locked')
+    fs.mkdirSync(path.join(dir, '.git'), { recursive: true })
+    fs.writeFileSync(path.join(dir, 'main.tf'), 'resource "s" "t" {}\n')
+    // Gate the plan so it is provably in flight (marker) before the git attempt.
+    const gate = path.join(dir, '.plan-gate')
+    execFileSync('mkfifo', [gate])
+    const plan = request(app).post('/api/tf/run').send({ command: 'plan', path: dir }).then(r => r)
+    await waitForMarker(path.join(dir, '.plan-ready'))
+    try {
+      const checkout = await request(app).post('/api/git/checkout').send({ path: dir, ref: 'other' })
+      expect(checkout.status).toBe(409)
+      expect(checkout.body.error).toContain('terraform')
+      // The blocked checkout must not have reached git itself.
+      expect(fs.existsSync(path.join(dir, '.git', 'op-log'))).toBe(false)
+    } finally {
+      fs.writeFileSync(gate, 'continue\n')
+    }
+    await plan
+  })
+
+  it('refuses a git checkout at the repository root while terraform runs in a folder inside it', async () => {
+    const repoRoot = tfDir('locked-repo')
+    const project = path.join(repoRoot, 'infra')
+    fs.mkdirSync(path.join(repoRoot, '.git'), { recursive: true })
+    fs.writeFileSync(path.join(repoRoot, '.git', 'toplevel'), `${repoRoot}\n`)
+    fs.mkdirSync(project, { recursive: true })
+    fs.writeFileSync(path.join(project, 'main.tf'), 'resource "s" "t" {}\n')
+    const gate = path.join(project, '.plan-gate')
+    execFileSync('mkfifo', [gate])
+    const plan = request(app).post('/api/tf/run').send({ command: 'plan', path: project }).then(r => r)
+    await waitForMarker(path.join(project, '.plan-ready'))
+    try {
+      const checkout = await request(app).post('/api/git/checkout').send({ path: repoRoot, ref: 'other' })
+      expect(checkout.status).toBe(409)
+      expect(fs.existsSync(path.join(repoRoot, '.git', 'op-log'))).toBe(false)
+    } finally {
+      fs.writeFileSync(gate, 'continue\n')
+    }
+    await plan
+  })
+
+  it('refuses a git checkout in one folder while terraform runs in a sibling folder of the same repository', async () => {
+    const repoRoot = tfDir('locked-siblings')
+    const subA = path.join(repoRoot, 'sub-a')
+    const subB = path.join(repoRoot, 'sub-b')
+    fs.mkdirSync(path.join(repoRoot, '.git'), { recursive: true })
+    // Each folder resolves --show-toplevel to the shared repository root.
+    for (const sub of [subA, subB]) {
+      fs.mkdirSync(sub, { recursive: true })
+      fs.writeFileSync(path.join(sub, 'main.tf'), 'resource "s" "t" {}\n')
+      fs.mkdirSync(path.join(sub, '.git'))
+      fs.writeFileSync(path.join(sub, '.git', 'toplevel'), `${repoRoot}\n`)
+    }
+    const gate = path.join(subB, '.plan-gate')
+    execFileSync('mkfifo', [gate])
+    const plan = request(app).post('/api/tf/run').send({ command: 'plan', path: subB }).then(r => r)
+    await waitForMarker(path.join(subB, '.plan-ready'))
+    try {
+      // A checkout in sub-a rewrites tracked files across the whole working tree.
+      const checkout = await request(app).post('/api/git/checkout').send({ path: subA, ref: 'other' })
+      expect(checkout.status).toBe(409)
+      expect(checkout.body.error).toContain('terraform')
+      // The blocked checkout must not have reached git itself.
+      expect(fs.existsSync(path.join(subA, '.git', 'op-log'))).toBe(false)
+    } finally {
+      fs.writeFileSync(gate, 'continue\n')
+    }
+    await plan
+  })
+
+  it('refuses a terraform run in one folder while a git checkout runs in a sibling folder of the same repository', async () => {
+    const repoRoot = tfDir('locked-siblings-rev')
+    const subA = path.join(repoRoot, 'sub-a')
+    const subB = path.join(repoRoot, 'sub-b')
+    fs.mkdirSync(path.join(repoRoot, '.git'), { recursive: true })
+    for (const sub of [subA, subB]) {
+      fs.mkdirSync(sub, { recursive: true })
+      fs.writeFileSync(path.join(sub, 'main.tf'), 'resource "s" "t" {}\n')
+      fs.mkdirSync(path.join(sub, '.git'))
+      fs.writeFileSync(path.join(sub, '.git', 'toplevel'), `${repoRoot}\n`)
+    }
+    // Hold the checkout in flight so its lock is provably taken before the plan.
+    const gate = path.join(subA, '.git', 'op-gate-checkout')
+    execFileSync('mkfifo', [gate])
+    const checkout = request(app).post('/api/git/checkout').send({ path: subA, ref: 'other' }).then(r => r)
+    await waitForMarker(path.join(subA, '.git', 'op-ready'))
+    try {
+      const plan = await request(app).post('/api/tf/run').send({ command: 'plan', path: subB })
+      expect(plan.status).toBe(409)
+      expect(plan.body.error).toContain('git')
+      // The blocked plan must not have reached terraform itself.
+      expect(fs.existsSync(path.join(subB, '.plan-args'))).toBe(false)
+    } finally {
+      fs.writeFileSync(gate, 'continue\n')
+    }
+    await checkout
+  })
+
+  it('treats a folder literally named ..project as inside its parent for the busy lock', async () => {
+    const repoRoot = tfDir('dotdot-project')
+    const project = path.join(repoRoot, '..project')
+    fs.mkdirSync(path.join(repoRoot, '.git'), { recursive: true })
+    fs.writeFileSync(path.join(repoRoot, '.git', 'toplevel'), `${repoRoot}\n`)
+    fs.mkdirSync(project)
+    fs.writeFileSync(path.join(project, 'main.tf'), 'resource "s" "t" {}\n')
+    const gate = path.join(project, '.plan-gate')
+    execFileSync('mkfifo', [gate])
+    const plan = request(app).post('/api/tf/run').send({ command: 'plan', path: project }).then(r => r)
+    await waitForMarker(path.join(project, '.plan-ready'))
+    try {
+      const checkout = await request(app).post('/api/git/checkout').send({ path: repoRoot, ref: 'other' })
+      expect(checkout.status).toBe(409)
+      expect(checkout.body.error).toContain('terraform')
+    } finally {
+      fs.writeFileSync(gate, 'continue\n')
+    }
+    await plan
+  })
+
   it('kills a plan that exceeds the timeout', async () => {
     const dir = tfDir('slow')
     fs.writeFileSync(path.join(dir, 'main.tf'), 'resource "s" "t" {}\n')
@@ -1771,22 +1929,6 @@ describe('POST /api/tf/run (lifecycle)', () => {
     return dir
   }
   const apply = (dir) => request(app).post('/api/tf/run').send({ command: 'apply', path: dir })
-
-  const waitForMarker = (file) => new Promise((resolve, reject) => {
-    let watcher
-    const timer = setTimeout(() => {
-      watcher?.close()
-      reject(new Error(`Timed out waiting for ${file}`))
-    }, 5000)
-    const check = () => {
-      if (!fs.existsSync(file)) return
-      clearTimeout(timer)
-      watcher.close()
-      resolve()
-    }
-    watcher = fs.watch(path.dirname(file), check)
-    check()
-  })
 
   const editWhilePlanning = async (dir, command, edit) => {
     const gate = path.join(dir, '.plan-gate')
@@ -4516,6 +4658,471 @@ describe('git credentials (/api/git/credentials*)', () => {
   })
 })
 
+describe('shared busy lock between terraform and git', () => {
+  const tfDir = (name) => path.join(root, 'tf', name)
+
+  // A repository root whose subfolders each carry a .git fixture so the fake
+  // git resolves --show-toplevel to repoRoot from any of them.
+  const makeRepo = (name, folders = []) => {
+    const repoRoot = tfDir(name)
+    fs.mkdirSync(path.join(repoRoot, '.git'), { recursive: true })
+    fs.writeFileSync(path.join(repoRoot, '.git', 'toplevel'), `${repoRoot}\n`)
+    for (const folder of folders) {
+      const dir = path.join(repoRoot, folder)
+      fs.mkdirSync(dir, { recursive: true })
+      fs.writeFileSync(path.join(dir, 'main.tf'), 'resource "s" "t" {}\n')
+      fs.mkdirSync(path.join(dir, '.git'))
+      fs.writeFileSync(path.join(dir, '.git', 'toplevel'), `${repoRoot}\n`)
+    }
+    return repoRoot
+  }
+
+  // Start a gated plan in dir; resolves once the process is provably in flight.
+  const holdPlan = async (dir) => {
+    execFileSync('mkfifo', [path.join(dir, '.plan-gate')])
+    const plan = request(app).post('/api/tf/run').send({ command: 'plan', path: dir }).then(r => r)
+    await waitForMarker(path.join(dir, '.plan-ready'))
+    return { plan, release: () => fs.writeFileSync(path.join(dir, '.plan-gate'), 'continue\n') }
+  }
+
+  // Start a gated git op in dir (op = the $1 of the git command); resolves once
+  // the process is blocked, which happens only after the handler took the lock.
+  const holdGitOp = async (dir, op, send) => {
+    execFileSync('mkfifo', [path.join(dir, '.git', `op-gate-${op}`)])
+    const pending = send().then(r => r)
+    await waitForMarker(path.join(dir, '.git', 'op-ready'))
+    return { pending, release: () => fs.writeFileSync(path.join(dir, '.git', `op-gate-${op}`), 'continue\n') }
+  }
+
+  describe('branch creation with checkout (switch:true)', () => {
+    it('refuses branch creation with switch:true while terraform runs in a sibling folder', async () => {
+      const repoRoot = makeRepo('branch-lock-a', ['sub-a', 'sub-b'])
+      const subA = path.join(repoRoot, 'sub-a')
+      const subB = path.join(repoRoot, 'sub-b')
+      const held = await holdPlan(subB)
+      try {
+        const res = await request(app).post('/api/git/branch').send({ path: subA, name: 'feature', from: 'other-ref', switch: true })
+        expect(res.status).toBe(409)
+        expect(res.body.error).toContain('terraform')
+        // The blocked branch creation must not have reached git itself.
+        expect(fs.existsSync(path.join(subA, '.git', 'op-log'))).toBe(false)
+      } finally {
+        held.release()
+      }
+      await held.plan
+    })
+
+    it('refuses a terraform run while branch creation with switch:true is held in a sibling folder', async () => {
+      const repoRoot = makeRepo('branch-lock-b', ['sub-a', 'sub-b'])
+      const subA = path.join(repoRoot, 'sub-a')
+      const subB = path.join(repoRoot, 'sub-b')
+      const sendBranch = () => request(app).post('/api/git/branch').send({ path: subA, name: 'feature', from: 'other-ref', switch: true })
+      const held = await holdGitOp(subA, 'checkout', sendBranch)
+      try {
+        const res = await request(app).post('/api/tf/run').send({ command: 'plan', path: subB })
+        expect(res.status).toBe(409)
+        expect(res.body.error).toContain('git')
+        // The blocked plan must not have reached terraform itself.
+        expect(fs.existsSync(path.join(subB, '.plan-args'))).toBe(false)
+      } finally {
+        held.release()
+      }
+      const branch = await held.pending
+      expect(branch.status).toBe(200)
+      expect(branch.body).toEqual({ created: 'feature', switched: true })
+      // The released checkout used the requested start reference.
+      expect(fs.readFileSync(path.join(subA, '.git', 'op-log'), 'utf-8').split('\n')).toContain('checkout -b feature other-ref')
+    })
+
+    it('keeps per-directory locking for branch creation without switch', async () => {
+      const dir = tfDir('branch-noswitch-lock')
+      fs.mkdirSync(path.join(dir, '.git'), { recursive: true })
+      fs.writeFileSync(path.join(dir, 'main.tf'), 'resource "s" "t" {}\n')
+      const held = await holdPlan(dir)
+      try {
+        // switch:false only creates a ref; the per-directory lock still applies.
+        const res = await request(app).post('/api/git/branch').send({ path: dir, name: 'plain', from: 'main' })
+        expect(res.status).toBe(409)
+        expect(fs.existsSync(path.join(dir, '.git', 'op-log'))).toBe(false)
+      } finally {
+        held.release()
+      }
+      await held.plan
+    })
+
+    it('releases the lock when branch creation with switch:true fails', async () => {
+      const dir = tfDir('branch-fail-lock')
+      fs.mkdirSync(path.join(dir, '.git'), { recursive: true })
+      fs.writeFileSync(path.join(dir, 'main.tf'), 'resource "s" "t" {}\n')
+      fs.writeFileSync(path.join(dir, '.git', 'checkout-fail'), '')
+      const res = await request(app).post('/api/git/branch').send({ path: dir, name: 'doomed', switch: true })
+      expect(res.status).toBe(400)
+      // The failed command must not leave the directory locked.
+      const followUp = await request(app).post('/api/tf/run').send({ command: 'plan', path: dir })
+      expect(followUp.status).toBe(200)
+    })
+  })
+
+  describe('working-tree root resolution failures', () => {
+    // Every operation that can rewrite the working tree, with its request.
+    const ops = [
+      ['checkout', (d) => request(app).post('/api/git/checkout').send({ path: d, ref: 'other' })],
+      ['merge', (d) => request(app).post('/api/git/merge').send({ path: d, branch: 'other' })],
+      ['pull', (d) => request(app).post('/api/git/pull').send({ path: d })],
+      ['rebase', (d) => request(app).post('/api/git/rebase').send({ path: d, branch: 'other' })],
+      ['rebase-step', (d) => request(app).post('/api/git/rebase-step').send({ path: d, action: 'continue' })],
+      ['branch switch:true', (d) => request(app).post('/api/git/branch').send({ path: d, name: 'nb', switch: true })],
+    ]
+    const slug = (label) => label.toLowerCase().replace(/[^a-z0-9]+/g, '-')
+
+    const freshRepo = (name) => {
+      const dir = tfDir(name)
+      fs.mkdirSync(path.join(dir, '.git'), { recursive: true })
+      fs.writeFileSync(path.join(dir, 'main.tf'), 'resource "s" "t" {}\n')
+      return dir
+    }
+
+    // The op must be refused before git runs, and the directory left unlocked.
+    // `clear` restores a healthy repository before the follow-up assertion.
+    const assertStopped = async (send, dir, clear) => {
+      const res = await send(dir)
+      expect(res.status).toBe(500)
+      expect(res.body.error).toContain('working tree root')
+      // The blocked mutation must not have reached git itself.
+      expect(fs.existsSync(path.join(dir, '.git', 'op-log'))).toBe(false)
+      clear()
+      // A subsequent valid operation is not left blocked.
+      const followUp = await request(app).post('/api/git/checkout').send({ path: dir, ref: 'other' })
+      expect(followUp.status).toBe(200)
+    }
+
+    it.each(ops)('stops %s when the root lookup returns an empty result', async (label, send) => {
+      const dir = freshRepo(`root-empty-${slug(label)}`)
+      const toplevel = path.join(dir, '.git', 'toplevel')
+      fs.writeFileSync(toplevel, '') // exists but empty
+      await assertStopped(send, dir, () => fs.rmSync(toplevel, { force: true }))
+    })
+
+    it.each(ops)('stops %s when the root lookup fails', async (label, send) => {
+      const dir = freshRepo(`root-fail-${slug(label)}`)
+      const marker = path.join(dir, '.git', 'revparse-fail')
+      fs.writeFileSync(marker, '')
+      await assertStopped(send, dir, () => fs.rmSync(marker, { force: true }))
+    })
+
+    it.each(ops)('stops %s when the reported root cannot be resolved', async (label, send) => {
+      const dir = freshRepo(`root-vanished-${slug(label)}`)
+      const toplevel = path.join(dir, '.git', 'toplevel')
+      fs.writeFileSync(toplevel, `${dir}/vanished\n`)
+      await assertStopped(send, dir, () => fs.rmSync(toplevel, { force: true }))
+    })
+
+    it.each(ops)('keeps the missing-git response for %s when git is not on PATH', async (label, send) => {
+      const dir = freshRepo(`root-nogit-${slug(label)}`)
+      const emptyBin = path.join(base, 'empty-bin')
+      fs.mkdirSync(emptyBin, { recursive: true })
+      const previousPath = process.env.PATH
+      process.env.PATH = emptyBin
+      try {
+        const res = await send(dir)
+        expect(res.status).toBe(503)
+        expect(res.body.error).toBe('git executable not found in PATH')
+        expect(fs.existsSync(path.join(dir, '.git', 'op-log'))).toBe(false)
+      } finally {
+        process.env.PATH = previousPath
+      }
+    })
+
+    it('stops working-tree-changing ops when the root lookup times out', async () => {
+      // Isolated server instance with a short git timeout so the suite does not
+      // wait for the production default (GIT_TIMEOUT_MS is read at import). The
+      // main app above keeps its own module state; resetModules only affects
+      // this fresh import.
+      const previous = process.env.GIT_TIMEOUT_MS
+      process.env.GIT_TIMEOUT_MS = '300'
+      try {
+        vi.resetModules()
+        const isoModule = await import('./server.cjs')
+        const dir = tfDir('root-slow')
+        fs.mkdirSync(path.join(dir, '.git'), { recursive: true })
+        fs.writeFileSync(path.join(dir, 'main.tf'), 'resource "s" "t" {}\n')
+        fs.writeFileSync(path.join(dir, '.git', 'revparse-slow'), '')
+        const started = Date.now()
+        const res = await request(isoModule.default).post('/api/git/checkout').send({ path: dir, ref: 'other' })
+        expect(res.status).toBe(500)
+        expect(res.body.error).toContain('working tree root')
+        // Bounded by the 300ms test timeout, not the production default.
+        expect(Date.now() - started).toBeLessThan(10_000)
+        expect(fs.existsSync(path.join(dir, '.git', 'op-log'))).toBe(false)
+        // A subsequent valid operation on the isolated instance is not blocked.
+        fs.rmSync(path.join(dir, '.git', 'revparse-slow'), { force: true })
+        const followUp = await request(isoModule.default).post('/api/git/checkout').send({ path: dir, ref: 'other' })
+        expect(followUp.status).toBe(200)
+      } finally {
+        if (previous === undefined) delete process.env.GIT_TIMEOUT_MS
+        else process.env.GIT_TIMEOUT_MS = previous
+      }
+    }, 30_000)
+
+    it('still allows git init in a new non-repository directory', async () => {
+      const dir = tfDir('init-after-root-fail')
+      fs.mkdirSync(dir) // no .git at all: root lookup would fail, but init is exempt
+      const res = await request(app).post('/api/git/init').send({ path: dir })
+      expect(res.status).toBe(200)
+      expect(fs.existsSync(path.join(dir, '.git'))).toBe(true)
+    })
+
+    it('preserves spaces in working-tree root names, including a trailing space', async () => {
+      const repoRoot = path.join(root, 'tf', 'spaced repo ') // inner + trailing space
+      fs.mkdirSync(path.join(repoRoot, '.git'), { recursive: true })
+      fs.writeFileSync(path.join(repoRoot, '.git', 'toplevel'), `${repoRoot}\n`)
+      const project = path.join(repoRoot, 'infra')
+      fs.mkdirSync(project, { recursive: true })
+      fs.writeFileSync(path.join(project, 'main.tf'), 'resource "s" "t" {}\n')
+      const held = await holdPlan(project)
+      try {
+        // The scope must keep the trailing space to match the terraform lock.
+        const res = await request(app).post('/api/git/checkout').send({ path: repoRoot, ref: 'other' })
+        expect(res.status).toBe(409)
+        expect(res.body.error).toContain('terraform')
+      } finally {
+        held.release()
+      }
+      await held.plan
+    })
+  })
+
+  describe('terraform entry points share the lock', () => {
+    const planDir = (name) => {
+      const dir = tfDir(name)
+      fs.mkdirSync(path.join(dir, '.git'), { recursive: true })
+      fs.writeFileSync(path.join(dir, 'main.tf'), 'resource "s" "t" {}\n')
+      return dir
+    }
+
+    it('blocks run-stream and plan-json while a plan is in flight', async () => {
+      const dir = planDir('shared-lock-tf')
+      // First get a valid preview id from an un-gated plan.
+      const first = await request(app).post('/api/tf/run').send({ command: 'plan', path: dir })
+      expect(first.status).toBe(200)
+      const previewId = first.body.previewId
+      expect(previewId).toMatch(/^[a-f0-9]{32}$/)
+
+      execFileSync('mkfifo', [path.join(dir, '.plan-gate')])
+      const plan = request(app).post('/api/tf/run').send({ command: 'plan', path: dir }).then(r => r)
+      await waitForMarker(path.join(dir, '.plan-ready'))
+      try {
+        const streamed = await request(app).get('/api/tf/run-stream').query({ command: 'plan', path: dir })
+        expect(streamed.status).toBe(409)
+        const json = await request(app).post('/api/tf/plan-json').send({ path: dir, previewId })
+        expect(json.status).toBe(409)
+        expect(json.body.error).toContain('terraform')
+      } finally {
+        fs.writeFileSync(path.join(dir, '.plan-gate'), 'continue\n')
+      }
+      await plan
+    })
+
+    it('blocks a git checkout while plan-json is in flight', async () => {
+      const dir = planDir('shared-lock-pj')
+      const first = await request(app).post('/api/tf/run').send({ command: 'plan', path: dir })
+      expect(first.status).toBe(200)
+      execFileSync('mkfifo', [path.join(dir, '.plan-gate')])
+      const json = request(app).post('/api/tf/plan-json').send({ path: dir, previewId: first.body.previewId }).then(r => r)
+      await waitForMarker(path.join(dir, '.plan-ready'))
+      try {
+        const checkout = await request(app).post('/api/git/checkout').send({ path: dir, ref: 'other' })
+        expect(checkout.status).toBe(409)
+        expect(checkout.body.error).toContain('terraform')
+        expect(fs.existsSync(path.join(dir, '.git', 'op-log'))).toBe(false)
+      } finally {
+        fs.writeFileSync(path.join(dir, '.plan-gate'), 'continue\n')
+      }
+      const done = await json
+      expect(done.status).toBe(200)
+      expect(done.headers['cache-control']).toBe('no-store')
+      expect(JSON.parse(done.body.rawJson).format_version).toBe('1.0')
+    })
+
+    it('releases the plan-json lock when temporary cleanup fails', async () => {
+      const dir = planDir('shared-lock-cleanup')
+      const first = await request(app).post('/api/tf/run').send({ command: 'plan', path: dir })
+      expect(first.status).toBe(200)
+
+      const before = fs.readdirSync(os.tmpdir()).filter(n => n.startsWith('terracode-plan-'))
+      const originalRmSync = fs.rmSync.bind(fs)
+      const spy = vi.spyOn(fs, 'rmSync').mockImplementation((target, options) => {
+        if (typeof target === 'string' && target.startsWith(path.join(os.tmpdir(), 'terracode-plan-'))) {
+          throw new Error('simulated cleanup failure')
+        }
+        return originalRmSync(target, options)
+      })
+      try {
+        const json = await request(app).post('/api/tf/plan-json').send({ path: dir, previewId: first.body.previewId })
+        // The successful response is preserved even though cleanup failed.
+        expect(json.status).toBe(200)
+        expect(JSON.parse(json.body.rawJson).format_version).toBe('1.0')
+      } finally {
+        spy.mockRestore()
+      }
+      // The failed removal left the private temp dir behind; clean it up here.
+      const after = fs.readdirSync(os.tmpdir()).filter(n => n.startsWith('terracode-plan-'))
+      const leftovers = after.filter(n => !before.includes(n))
+      expect(leftovers.length).toBe(1) // proves rmSync really failed for the server
+      for (const name of leftovers) fs.rmSync(path.join(os.tmpdir(), name), { recursive: true, force: true })
+      // The lock was released despite the cleanup failure.
+      const followUp = await request(app).post('/api/tf/run').send({ command: 'plan', path: dir })
+      expect(followUp.status).toBe(200)
+    })
+
+    it('answers an error and releases the lock when writing the private plan fails', async () => {
+      const dir = planDir('shared-lock-writefail')
+      const first = await request(app).post('/api/tf/run').send({ command: 'plan', path: dir })
+      expect(first.status).toBe(200)
+
+      const spy = vi.spyOn(fs, 'mkdtempSync').mockImplementation(() => { throw new Error('simulated mkdtemp failure') })
+      try {
+        const res = await request(app).post('/api/tf/plan-json').send({ path: dir, previewId: first.body.previewId })
+        expect(res.status).toBe(500)
+        expect(res.body.error).toContain('Could not render the saved plan as JSON')
+      } finally {
+        spy.mockRestore()
+      }
+      // The failed request must not leave the directory locked.
+      const followUp = await request(app).post('/api/tf/run').send({ command: 'plan', path: dir })
+      expect(followUp.status).toBe(200)
+    })
+
+    it('releases the terraform lock after a failed command', async () => {
+      const dir = planDir('lock-failed-cmd')
+      fs.writeFileSync(path.join(dir, 'main.tf'), 'resource "bad" "x" {}\nINVALID\n')
+      try {
+        const res = await request(app).post('/api/tf/run').send({ command: 'validate', path: dir })
+        expect(res.status).toBe(200)
+        expect(res.body.exitCode).toBe(1)
+        // The failed command must not leave the directory locked.
+        const followUp = await request(app).post('/api/git/checkout').send({ path: dir, ref: 'other' })
+        expect(followUp.status).toBe(200)
+      } finally {
+        fs.writeFileSync(path.join(dir, 'main.tf'), 'resource "s" "t" {}\n')
+      }
+    })
+
+    it('releases the terraform lock after a timeout', async () => {
+      const dir = planDir('lock-timeout')
+      fs.writeFileSync(path.join(dir, '.slow-plan'), '')
+      try {
+        const res = await request(app).post('/api/tf/run').send({ command: 'plan', path: dir })
+        expect(res.status).toBe(200)
+        expect(res.body.timedOut).toBe(true)
+        // The killed plan must not leave the directory locked.
+        const followUp = await request(app).post('/api/git/checkout').send({ path: dir, ref: 'other' })
+        expect(followUp.status).toBe(200)
+      } finally {
+        fs.rmSync(path.join(dir, '.slow-plan'), { force: true })
+      }
+    }, 15_000)
+
+    it('keeps the lock for a disconnected streaming client until the process finishes', async () => {
+      const dir = planDir('lock-stream-disconnect')
+      execFileSync('mkfifo', [path.join(dir, '.plan-gate')])
+
+      // Drive the SSE endpoint over a real socket so the client can disconnect.
+      const listener = app.listen(0)
+      await new Promise(resolve => listener.once('listening', resolve))
+      try {
+        const port = listener.address().port
+        const req = http.get({ host: '127.0.0.1', port, path: `/api/tf/run-stream?command=plan&path=${encodeURIComponent(dir)}` })
+        await waitForMarker(path.join(dir, '.plan-ready')) // plan in flight, lock held
+        req.destroy() // disconnect the streaming client mid-run
+
+        const blocked = await request(app).post('/api/git/checkout').send({ path: dir, ref: 'other' })
+        expect(blocked.status).toBe(409) // lock kept while the process still runs
+
+        fs.writeFileSync(path.join(dir, '.plan-gate'), 'continue\n')
+        // Wait until the plan finishes and releases the lock (bounded probe loop).
+        let released = false
+        for (let i = 0; i < 50 && !released; i++) {
+          const probe = await request(app).post('/api/git/checkout').send({ path: dir, ref: 'other' })
+          if (probe.status === 200) released = true
+          else await new Promise(resolve => setTimeout(resolve, 100))
+        }
+        expect(released).toBe(true)
+      } finally {
+        fs.rmSync(path.join(dir, '.plan-gate'), { force: true })
+        listener.close()
+      }
+    }, 20_000)
+  })
+
+  describe('path boundaries', () => {
+    it('blocks a checkout in a child folder while terraform runs at the repository root', async () => {
+      const repoRoot = makeRepo('boundary-parent', ['infra'])
+      fs.writeFileSync(path.join(repoRoot, 'main.tf'), 'resource "s" "t" {}\n')
+      const held = await holdPlan(repoRoot)
+      try {
+        const res = await request(app).post('/api/git/checkout').send({ path: path.join(repoRoot, 'infra'), ref: 'other' })
+        expect(res.status).toBe(409)
+        expect(res.body.error).toContain('terraform')
+      } finally {
+        held.release()
+      }
+      await held.plan
+    })
+
+    it('does not block operations in independent repositories', async () => {
+      const repoA = makeRepo('boundary-repo-a', ['proj'])
+      const repoB = makeRepo('boundary-repo-b', ['proj'])
+      const held = await holdPlan(path.join(repoA, 'proj'))
+      try {
+        const res = await request(app).post('/api/git/checkout').send({ path: path.join(repoB, 'proj'), ref: 'other' })
+        expect(res.status).toBe(200)
+        // The independent repository's git was actually invoked.
+        expect(fs.readFileSync(path.join(repoB, 'proj', '.git', 'op-log'), 'utf-8').split('\n')).toContain('checkout other')
+      } finally {
+        held.release()
+      }
+      await held.plan
+    })
+
+    it('treats a symlink alias of the repository root as the same project', async () => {
+      const realRoot = tfDir('boundary-symlink-real')
+      fs.mkdirSync(path.join(realRoot, '.git'), { recursive: true })
+      // The fake git reports the SYMLINK path as toplevel; the server must
+      // canonicalize it so the lock matches the real directory.
+      const alias = path.join(root, 'tf', 'boundary-symlink-alias')
+      fs.symlinkSync(realRoot, alias)
+      fs.writeFileSync(path.join(realRoot, '.git', 'toplevel'), `${alias}\n`)
+      const project = path.join(realRoot, 'infra')
+      fs.mkdirSync(project, { recursive: true })
+      fs.writeFileSync(path.join(project, 'main.tf'), 'resource "s" "t" {}\n')
+      const held = await holdPlan(project)
+      try {
+        // Request via the canonical root; scope resolves alias -> realRoot.
+        const res = await request(app).post('/api/git/checkout').send({ path: realRoot, ref: 'other' })
+        expect(res.status).toBe(409)
+        expect(res.body.error).toContain('terraform')
+      } finally {
+        held.release()
+      }
+      await held.plan
+    })
+
+    it('does not treat similarly named sibling paths as nested', async () => {
+      const repoA = makeRepo('boundary-similar-a', ['proj'])
+      const repoB = makeRepo('boundary-similar-ab', ['proj']) // name extends repo A's
+      const held = await holdPlan(path.join(repoA, 'proj'))
+      try {
+        const res = await request(app).post('/api/git/checkout').send({ path: path.join(repoB, 'proj'), ref: 'other' })
+        expect(res.status).toBe(200)
+      } finally {
+        held.release()
+      }
+      await held.plan
+    })
+  })
+})
+
 describe('selective commits with real Git', () => {
   let savedPath
   let savedGlobalConfig
@@ -4668,4 +5275,77 @@ describe('selective commits with real Git', () => {
     expect(git(dir, ['show', '--format=', '--name-only', 'HEAD'])).toBe('aws/bucket/modules-registry.tf')
     expect(git(dir, ['status', '--porcelain'])).toBe('?? .terraform-version')
   })
+
+})
+
+describe('shared lock with real Git (no remote)', () => {
+  // Real git for the server and the test itself, but the FAKE terraform stays
+  // on PATH: a bin dir holding only `terraform` shadows nothing else.
+  let savedPath
+  let savedGlobalConfig
+  let savedNoSystem
+  const realGit = (dir, args) => execFileSync('git', args, { cwd: dir, encoding: 'utf-8' }).trim()
+
+  beforeAll(() => {
+    savedPath = process.env.PATH
+    savedGlobalConfig = process.env.GIT_CONFIG_GLOBAL
+    savedNoSystem = process.env.GIT_CONFIG_NOSYSTEM
+    const tfOnlyBin = path.join(base, 'tf-only-bin')
+    fs.mkdirSync(tfOnlyBin)
+    fs.copyFileSync(path.join(base, 'bin', 'terraform'), path.join(tfOnlyBin, 'terraform'))
+    // Drop the shared fake bin dir (fake git included); keep only fake terraform.
+    process.env.PATH = [path.join(tfOnlyBin), ...savedPath.split(path.delimiter).filter(d => d !== path.join(base, 'bin'))].join(path.delimiter)
+    process.env.GIT_CONFIG_GLOBAL = path.join(base, 'empty-git-config')
+    fs.writeFileSync(process.env.GIT_CONFIG_GLOBAL, '')
+    process.env.GIT_CONFIG_NOSYSTEM = '1'
+  })
+
+  afterAll(() => {
+    process.env.PATH = savedPath
+    if (savedGlobalConfig === undefined) delete process.env.GIT_CONFIG_GLOBAL
+    else process.env.GIT_CONFIG_GLOBAL = savedGlobalConfig
+    if (savedNoSystem === undefined) delete process.env.GIT_CONFIG_NOSYSTEM
+    else process.env.GIT_CONFIG_NOSYSTEM = savedNoSystem
+  })
+
+  it('blocks a branch checkout while a fake plan runs in the repo, then allows it after release', async () => {
+    // Real local repository (no remote): two refs with different content in the
+    // sibling Terraform directory.
+    const repo = fs.mkdtempSync(path.join(root, 'shared-lock-realgit-'))
+    realGit(repo, ['init', '-q'])
+    realGit(repo, ['config', 'user.name', 'Test User'])
+    realGit(repo, ['config', 'user.email', 'test@example.invalid'])
+    fs.mkdirSync(path.join(repo, 'infra'))
+    fs.writeFileSync(path.join(repo, 'infra', 'main.tf'), 'resource "a" "b" {}\n')
+    realGit(repo, ['add', '.'])
+    realGit(repo, ['commit', '-qm', 'first'])
+    realGit(repo, ['branch', '-m', 'base']) // independent of the default branch name
+    const headBefore = realGit(repo, ['rev-parse', 'HEAD'])
+    realGit(repo, ['checkout', '-qb', 'other'])
+    fs.writeFileSync(path.join(repo, 'infra', 'main.tf'), 'resource "c" "d" {}\n')
+    realGit(repo, ['commit', '-qam', 'second'])
+    realGit(repo, ['checkout', '-q', 'base'])
+
+    const infra = path.join(repo, 'infra')
+    execFileSync('mkfifo', [path.join(infra, '.plan-gate')])
+    const plan = request(app).post('/api/tf/run').send({ command: 'plan', path: infra }).then(r => r)
+    await waitForMarker(path.join(infra, '.plan-ready'))
+    try {
+      const res = await request(app).post('/api/git/branch').send({ path: repo, name: 'new-branch', from: 'other', switch: true })
+      expect(res.status).toBe(409)
+      // HEAD and file content are untouched while the plan is held.
+      expect(realGit(repo, ['rev-parse', 'HEAD'])).toBe(headBefore)
+      expect(fs.readFileSync(path.join(infra, 'main.tf'), 'utf-8')).toBe('resource "a" "b" {}\n')
+    } finally {
+      fs.writeFileSync(path.join(infra, '.plan-gate'), 'continue\n')
+    }
+    await plan
+
+    // After the plan finishes, the same request succeeds and switches content.
+    const done = await request(app).post('/api/git/branch').send({ path: repo, name: 'new-branch', from: 'other', switch: true })
+    expect(done.status).toBe(200)
+    expect(done.body).toEqual({ created: 'new-branch', switched: true })
+    expect(realGit(repo, ['rev-parse', '--abbrev-ref', 'HEAD'])).toBe('new-branch')
+    expect(fs.readFileSync(path.join(infra, 'main.tf'), 'utf-8')).toBe('resource "c" "d" {}\n')
+  }, 20_000)
 })
