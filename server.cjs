@@ -2880,7 +2880,12 @@ app.post('/api/tf/plan-json', async (req, res) => {
   if (!preview || preview.dir !== dir || Date.now() >= preview.expiresAt) {
     return res.status(404).json({ error: 'Plan preview expired — run Plan again' });
   }
-  if (tfRunning.has(dir)) return res.status(409).json({ error: 'A terraform command is already running for this directory' });
+  // Same shared rule as the other terraform entry points: a git operation in
+  // this project (or another terraform command) blocks rendering too.
+  const busy = projectBusyError(dir);
+  if (busy) {
+    return res.status(409).json({ error: busy });
+  }
   tfRunning.add(dir);
   let tempDir;
   try {
@@ -3098,10 +3103,12 @@ const gitBusy = new Set();
 // files a running terraform command reads, and a terraform run must not start
 // while git is rewriting them. Two paths belong to the same project when one
 // contains the other (a repository root and a Terraform folder inside it).
+// Only ".." itself and paths starting with ".." + sep point outside; a child
+// literally named "..project" stays inside its parent.
 function pathsOverlap(a, b) {
   const inside = (child, parent) => {
     const rel = path.relative(parent, child);
-    return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+    return rel === '' || (rel !== '..' && !rel.startsWith('..' + path.sep) && !path.isAbsolute(rel));
   };
   return inside(a, b) || inside(b, a);
 }
@@ -3114,6 +3121,25 @@ function projectBusyError(dir) {
     if (pathsOverlap(d, dir)) return 'A git operation is already in progress for this directory';
   }
   return null;
+}
+
+// Operations that rewrite tracked files across the whole working tree (checkout,
+// merge, pull, rebase) must be checked against the repository's actual root, not
+// just the requested subdirectory: a checkout started in repo/sub-a rewrites
+// files in repo/sub-b too. Falls back to dir itself when it is not inside a
+// repository or git cannot be consulted (e.g. git init on a fresh directory).
+function worktreeScope(dir) {
+  return runGit(dir, ['rev-parse', '--show-toplevel']).then(res => {
+    if (res.error || res.timedOut || res.exitCode !== 0) return dir;
+    const top = String(res.stdout || '').trim().split('\n')[0].trim();
+    if (!top) return dir;
+    try {
+      // Canonicalize so symlink aliases of the same root compare equal.
+      return fs.realpathSync(top);
+    } catch {
+      return dir; // root vanished or is unreadable; keep the requested directory
+    }
+  });
 }
 
 // A safe branch/ref name: starts with a letter or digit, then letters/digits/
@@ -3911,11 +3937,13 @@ app.post('/api/git/checkout', async (req, res) => {
   const dir = resolveRepoDir(req, res);
   if (!dir) return;
 
-  const busy = projectBusyError(dir);
+  // A checkout rewrites tracked files across the whole working tree.
+  const scope = await worktreeScope(dir);
+  const busy = projectBusyError(scope);
   if (busy) {
     return res.status(409).json({ error: busy });
   }
-  gitBusy.add(dir);
+  gitBusy.add(scope);
   try {
     const result = await runGit(dir, ['checkout', ref]);
     if (result.error === 'enoent') {
@@ -3926,7 +3954,7 @@ app.post('/api/git/checkout', async (req, res) => {
     }
     res.json({ checkedOut: ref });
   } finally {
-    gitBusy.delete(dir);
+    gitBusy.delete(scope);
   }
 });
 
@@ -3943,11 +3971,13 @@ app.post('/api/git/merge', async (req, res) => {
   const dir = resolveRepoDir(req, res);
   if (!dir) return;
 
-  const busy = projectBusyError(dir);
+  // A merge rewrites tracked files across the whole working tree.
+  const scope = await worktreeScope(dir);
+  const busy = projectBusyError(scope);
   if (busy) {
     return res.status(409).json({ error: busy });
   }
-  gitBusy.add(dir);
+  gitBusy.add(scope);
   try {
     const result = await runGit(dir, ['merge', branch]);
     if (result.error === 'enoent') {
@@ -3970,7 +4000,7 @@ app.post('/api/git/merge', async (req, res) => {
       ...(conflicted ? { hint: 'Resolve the conflicts in the editor, then commit to finish the merge.' } : {}),
     });
   } finally {
-    gitBusy.delete(dir);
+    gitBusy.delete(scope);
   }
 });
 
@@ -3987,11 +4017,13 @@ app.post('/api/git/rebase', async (req, res) => {
   const dir = resolveRepoDir(req, res);
   if (!dir) return;
 
-  const busy = projectBusyError(dir);
+  // A rebase rewrites tracked files across the whole working tree.
+  const scope = await worktreeScope(dir);
+  const busy = projectBusyError(scope);
   if (busy) {
     return res.status(409).json({ error: busy });
   }
-  gitBusy.add(dir);
+  gitBusy.add(scope);
   try {
     const result = await runGit(dir, ['rebase', branch]);
     if (result.error === 'enoent') {
@@ -4012,7 +4044,7 @@ app.post('/api/git/rebase', async (req, res) => {
       hint: 'Resolve the conflicts in the editor, then continue or abort the rebase.',
     });
   } finally {
-    gitBusy.delete(dir);
+    gitBusy.delete(scope);
   }
 });
 
@@ -4027,11 +4059,13 @@ app.post('/api/git/rebase-step', async (req, res) => {
   const dir = resolveRepoDir(req, res);
   if (!dir) return;
 
-  const busy = projectBusyError(dir);
+  // A rebase step rewrites tracked files across the whole working tree.
+  const scope = await worktreeScope(dir);
+  const busy = projectBusyError(scope);
   if (busy) {
     return res.status(409).json({ error: busy });
   }
-  gitBusy.add(dir);
+  gitBusy.add(scope);
   try {
     const result = await runGit(dir, ['rebase', `--${action}`]);
     if (result.error === 'enoent') {
@@ -4044,7 +4078,7 @@ app.post('/api/git/rebase-step', async (req, res) => {
     // continue can stop again at the next conflict; report done:false in that case.
     res.json({ action, done: result.exitCode === 0, output });
   } finally {
-    gitBusy.delete(dir);
+    gitBusy.delete(scope);
   }
 });
 
@@ -4262,11 +4296,13 @@ app.post('/api/git/pull', async (req, res) => {
   const dir = resolveRepoDir(req, res);
   if (!dir) return;
 
-  const busy = projectBusyError(dir);
+  // A pull merges into the working tree across the whole repository.
+  const scope = await worktreeScope(dir);
+  const busy = projectBusyError(scope);
   if (busy) {
     return res.status(409).json({ error: busy });
   }
-  gitBusy.add(dir);
+  gitBusy.add(scope);
   try {
     const args = ['pull'];
     if (branch) args.push('origin', branch);
@@ -4284,7 +4320,7 @@ app.post('/api/git/pull', async (req, res) => {
     const conflicted = /conflict/i.test(output);
     res.json({ success: false, conflicted, branch: branch ?? undefined, output });
   } finally {
-    gitBusy.delete(dir);
+    gitBusy.delete(scope);
   }
 });
 

@@ -327,6 +327,15 @@ if [ ! -d .git ]; then
   exit 128
 fi
 
+# A FIFO named op-gate-<op> lets tests hold that operation in flight while
+# asserting on the shared busy lock. The marker appears once the process is
+# blocked, which happens only after the server handler took the lock; the op-log
+# entry below is written only after the gate releases.
+if [ -p ".git/op-gate-$1" ]; then
+  : > .git/op-ready
+  read -r _ < ".git/op-gate-$1"
+fi
+
 # Record the auth-related env vars the server injected for network ops.
 log_env() {
   {
@@ -648,6 +657,24 @@ afterAll(async () => {
   if (stopFileWatcher !== null) stopFileWatcher()
   if (registryServer !== null) await new Promise(resolve => registryServer.close(resolve))
   fs.rmSync(base, { recursive: true, force: true })
+})
+
+// Resolves once `file` appears on disk. Synchronizes with gated fake processes
+// (readiness markers) instead of fixed sleeps.
+const waitForMarker = (file) => new Promise((resolve, reject) => {
+  let watcher
+  const timer = setTimeout(() => {
+    watcher?.close()
+    reject(new Error(`Timed out waiting for ${file}`))
+  }, 5000)
+  const check = () => {
+    if (!fs.existsSync(file)) return
+    clearTimeout(timer)
+    watcher.close()
+    resolve()
+  }
+  watcher = fs.watch(path.dirname(file), check)
+  check()
 })
 
 describe('GET /api/files', () => {
@@ -1626,29 +1653,121 @@ describe('POST /api/tf/run', () => {
     const dir = tfDir('locked')
     fs.mkdirSync(path.join(dir, '.git'), { recursive: true })
     fs.writeFileSync(path.join(dir, 'main.tf'), 'resource "s" "t" {}\n')
-    fs.writeFileSync(path.join(dir, '.slow-plan'), '')
+    // Gate the plan so it is provably in flight (marker) before the git attempt.
+    const gate = path.join(dir, '.plan-gate')
+    execFileSync('mkfifo', [gate])
     const plan = request(app).post('/api/tf/run').send({ command: 'plan', path: dir }).then(r => r)
-    await new Promise(resolve => setTimeout(resolve, 300))
-    const checkout = await request(app).post('/api/git/checkout').send({ path: dir, ref: 'other' })
-    expect(checkout.status).toBe(409)
-    expect(checkout.body.error).toContain('terraform')
-    expect(fs.existsSync(path.join(dir, '.git', 'op-log'))).toBe(false)
+    await waitForMarker(path.join(dir, '.plan-ready'))
+    try {
+      const checkout = await request(app).post('/api/git/checkout').send({ path: dir, ref: 'other' })
+      expect(checkout.status).toBe(409)
+      expect(checkout.body.error).toContain('terraform')
+      // The blocked checkout must not have reached git itself.
+      expect(fs.existsSync(path.join(dir, '.git', 'op-log'))).toBe(false)
+    } finally {
+      fs.writeFileSync(gate, 'continue\n')
+    }
     await plan
-  }, 15_000)
+  })
 
   it('refuses a git checkout at the repository root while terraform runs in a folder inside it', async () => {
     const repoRoot = tfDir('locked-repo')
     const project = path.join(repoRoot, 'infra')
     fs.mkdirSync(path.join(repoRoot, '.git'), { recursive: true })
+    fs.writeFileSync(path.join(repoRoot, '.git', 'toplevel'), `${repoRoot}\n`)
     fs.mkdirSync(project, { recursive: true })
     fs.writeFileSync(path.join(project, 'main.tf'), 'resource "s" "t" {}\n')
-    fs.writeFileSync(path.join(project, '.slow-plan'), '')
+    const gate = path.join(project, '.plan-gate')
+    execFileSync('mkfifo', [gate])
     const plan = request(app).post('/api/tf/run').send({ command: 'plan', path: project }).then(r => r)
-    await new Promise(resolve => setTimeout(resolve, 300))
-    const checkout = await request(app).post('/api/git/checkout').send({ path: repoRoot, ref: 'other' })
-    expect(checkout.status).toBe(409)
+    await waitForMarker(path.join(project, '.plan-ready'))
+    try {
+      const checkout = await request(app).post('/api/git/checkout').send({ path: repoRoot, ref: 'other' })
+      expect(checkout.status).toBe(409)
+      expect(fs.existsSync(path.join(repoRoot, '.git', 'op-log'))).toBe(false)
+    } finally {
+      fs.writeFileSync(gate, 'continue\n')
+    }
     await plan
-  }, 15_000)
+  })
+
+  it('refuses a git checkout in one folder while terraform runs in a sibling folder of the same repository', async () => {
+    const repoRoot = tfDir('locked-siblings')
+    const subA = path.join(repoRoot, 'sub-a')
+    const subB = path.join(repoRoot, 'sub-b')
+    fs.mkdirSync(path.join(repoRoot, '.git'), { recursive: true })
+    // Each folder resolves --show-toplevel to the shared repository root.
+    for (const sub of [subA, subB]) {
+      fs.mkdirSync(sub, { recursive: true })
+      fs.writeFileSync(path.join(sub, 'main.tf'), 'resource "s" "t" {}\n')
+      fs.mkdirSync(path.join(sub, '.git'))
+      fs.writeFileSync(path.join(sub, '.git', 'toplevel'), `${repoRoot}\n`)
+    }
+    const gate = path.join(subB, '.plan-gate')
+    execFileSync('mkfifo', [gate])
+    const plan = request(app).post('/api/tf/run').send({ command: 'plan', path: subB }).then(r => r)
+    await waitForMarker(path.join(subB, '.plan-ready'))
+    try {
+      // A checkout in sub-a rewrites tracked files across the whole working tree.
+      const checkout = await request(app).post('/api/git/checkout').send({ path: subA, ref: 'other' })
+      expect(checkout.status).toBe(409)
+      expect(checkout.body.error).toContain('terraform')
+      // The blocked checkout must not have reached git itself.
+      expect(fs.existsSync(path.join(subA, '.git', 'op-log'))).toBe(false)
+    } finally {
+      fs.writeFileSync(gate, 'continue\n')
+    }
+    await plan
+  })
+
+  it('refuses a terraform run in one folder while a git checkout runs in a sibling folder of the same repository', async () => {
+    const repoRoot = tfDir('locked-siblings-rev')
+    const subA = path.join(repoRoot, 'sub-a')
+    const subB = path.join(repoRoot, 'sub-b')
+    fs.mkdirSync(path.join(repoRoot, '.git'), { recursive: true })
+    for (const sub of [subA, subB]) {
+      fs.mkdirSync(sub, { recursive: true })
+      fs.writeFileSync(path.join(sub, 'main.tf'), 'resource "s" "t" {}\n')
+      fs.mkdirSync(path.join(sub, '.git'))
+      fs.writeFileSync(path.join(sub, '.git', 'toplevel'), `${repoRoot}\n`)
+    }
+    // Hold the checkout in flight so its lock is provably taken before the plan.
+    const gate = path.join(subA, '.git', 'op-gate-checkout')
+    execFileSync('mkfifo', [gate])
+    const checkout = request(app).post('/api/git/checkout').send({ path: subA, ref: 'other' }).then(r => r)
+    await waitForMarker(path.join(subA, '.git', 'op-ready'))
+    try {
+      const plan = await request(app).post('/api/tf/run').send({ command: 'plan', path: subB })
+      expect(plan.status).toBe(409)
+      expect(plan.body.error).toContain('git')
+      // The blocked plan must not have reached terraform itself.
+      expect(fs.existsSync(path.join(subB, '.plan-args'))).toBe(false)
+    } finally {
+      fs.writeFileSync(gate, 'continue\n')
+    }
+    await checkout
+  })
+
+  it('treats a folder literally named ..project as inside its parent for the busy lock', async () => {
+    const repoRoot = tfDir('dotdot-project')
+    const project = path.join(repoRoot, '..project')
+    fs.mkdirSync(path.join(repoRoot, '.git'), { recursive: true })
+    fs.writeFileSync(path.join(repoRoot, '.git', 'toplevel'), `${repoRoot}\n`)
+    fs.mkdirSync(project)
+    fs.writeFileSync(path.join(project, 'main.tf'), 'resource "s" "t" {}\n')
+    const gate = path.join(project, '.plan-gate')
+    execFileSync('mkfifo', [gate])
+    const plan = request(app).post('/api/tf/run').send({ command: 'plan', path: project }).then(r => r)
+    await waitForMarker(path.join(project, '.plan-ready'))
+    try {
+      const checkout = await request(app).post('/api/git/checkout').send({ path: repoRoot, ref: 'other' })
+      expect(checkout.status).toBe(409)
+      expect(checkout.body.error).toContain('terraform')
+    } finally {
+      fs.writeFileSync(gate, 'continue\n')
+    }
+    await plan
+  })
 
   it('kills a plan that exceeds the timeout', async () => {
     const dir = tfDir('slow')
@@ -1799,22 +1918,6 @@ describe('POST /api/tf/run (lifecycle)', () => {
     return dir
   }
   const apply = (dir) => request(app).post('/api/tf/run').send({ command: 'apply', path: dir })
-
-  const waitForMarker = (file) => new Promise((resolve, reject) => {
-    let watcher
-    const timer = setTimeout(() => {
-      watcher?.close()
-      reject(new Error(`Timed out waiting for ${file}`))
-    }, 5000)
-    const check = () => {
-      if (!fs.existsSync(file)) return
-      clearTimeout(timer)
-      watcher.close()
-      resolve()
-    }
-    watcher = fs.watch(path.dirname(file), check)
-    check()
-  })
 
   const editWhilePlanning = async (dir, command, edit) => {
     const gate = path.join(dir, '.plan-gate')
