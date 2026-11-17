@@ -47,6 +47,70 @@
   padding: 0;
 }
 
+/* Header row of the Git sidebar: title left, collapse button right. The button
+   shares sidebarVis.right with Ctrl+Shift+B and the collapsed strip below. */
+.git-sidebar-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.git-collapse-btn {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: transparent;
+  color: #24292f;
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.git-collapse-btn:hover {
+  background: rgba(27, 32, 64, 0.08);
+}
+
+/* Collapsed Git sidebar: a 32px strip on the right edge with an expand arrow and
+   a vertical label. Clicking it restores the panel; like the header button it
+   toggles sidebarVis.right, so the state persists across reloads. The light
+   background is hardcoded in both OS themes (same as .git-sidebar), hence the
+   explicit dark text color instead of theme variables. */
+.git-strip {
+  flex: 0 0 32px;
+  height: 100%;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.75rem;
+  padding: 0;
+  border: none;
+  border-left: 1px solid var(--border);
+  background: #fafbfc;
+  color: #24292f;
+  font-family: var(--sans);
+  cursor: pointer;
+}
+
+.git-strip:hover {
+  background: #eef0f4;
+}
+
+.git-strip-arrow {
+  font-size: 12px;
+  line-height: 1;
+}
+
+.git-strip-label {
+  writing-mode: vertical-rl;
+  font-size: 13px;
+  letter-spacing: 0.5px;
+  user-select: none;
+}
+
 /* Form controls do NOT inherit text color — the UA stylesheet gives buttons
    `buttontext` and inputs `fieldtext`, both of which flip to white under
    color-scheme: dark. The sidebar stays light in every theme, so force explicit
