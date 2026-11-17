@@ -1076,35 +1076,62 @@ function App() {
         )}
       </main>
 
-      {gitCtx.dirPath !== '' && sidebarVis.right && (
-        <>
-          <div
-            className="sb-resizer"
-            role="separator"
-            aria-orientation="vertical"
-            aria-label="Resize the right sidebar"
-            title="Drag to resize — double-click to reset (Ctrl+Shift+B hides this sidebar)"
-            onPointerDown={startResize('right')}
-            onPointerMove={moveResize}
-            onPointerUp={endResize}
-            onPointerCancel={endResize}
-            onDoubleClick={resetRightWidth}
-          />
-          <aside className="git-sidebar" style={{ flexBasis: rightWidth }}>
-            <h3>Git</h3>
-            {/* key remounts the panel per browsed folder so branch/log state resets. */}
-            <GitPanel
-              key={gitCtx.dirPath}
-              dirPath={gitCtx.dirPath}
-              isRepo={gitCtx.status?.isRepo ?? false}
-              entries={gitCtx.status?.entries ?? []}
-              refreshKey={treeBump}
-              onRefresh={() => setTreeBump(k => k + 1)}
-              onOpenCommit={(dir, hash) => void handleOpenCommit(dir, hash)}
-              openCommitHash={commitView?.hash ?? null}
+      {gitCtx.dirPath !== '' && (
+        sidebarVis.right ? (
+          <>
+            <div
+              className="sb-resizer"
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="Resize the right sidebar"
+              title="Drag to resize — double-click to reset (Ctrl+Shift+B hides this sidebar)"
+              onPointerDown={startResize('right')}
+              onPointerMove={moveResize}
+              onPointerUp={endResize}
+              onPointerCancel={endResize}
+              onDoubleClick={resetRightWidth}
             />
-          </aside>
-        </>
+            <aside className="git-sidebar" style={{ flexBasis: rightWidth }}>
+              <div className="git-sidebar-header">
+                <h3>Git</h3>
+                <button
+                  type="button"
+                  className="git-collapse-btn"
+                  onClick={toggleRightSidebar}
+                  aria-label="Collapse Git panel (Ctrl+Shift+B)"
+                  title="Collapse (Ctrl+Shift+B)"
+                >
+                  –
+                </button>
+              </div>
+              {/* key remounts the panel per browsed folder so branch/log state resets. */}
+              <GitPanel
+                key={gitCtx.dirPath}
+                dirPath={gitCtx.dirPath}
+                isRepo={gitCtx.status?.isRepo ?? false}
+                entries={gitCtx.status?.entries ?? []}
+                refreshKey={treeBump}
+                onRefresh={() => setTreeBump(k => k + 1)}
+                onOpenCommit={(dir, hash) => void handleOpenCommit(dir, hash)}
+                openCommitHash={commitView?.hash ?? null}
+              />
+            </aside>
+          </>
+        ) : (
+          // Collapsed: a 32px strip on the right edge restores the panel. It shares
+          // sidebarVis.right with the header button and Ctrl+Shift+B, so the state
+          // persists across reloads via the same localStorage key.
+          <button
+            type="button"
+            className="git-strip"
+            onClick={toggleRightSidebar}
+            aria-label="Expand Git panel (Ctrl+Shift+B)"
+            title="Show Git panel (Ctrl+Shift+B)"
+          >
+            <span className="git-strip-arrow">◀</span>
+            <span className="git-strip-label">Git</span>
+          </button>
+        )
       )}
 
       {paletteOpen && (
