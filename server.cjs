@@ -41,6 +41,11 @@ function rootsPayload() {
   return { roots: allRoots(), removableRoots: [...EXTRA_ROOTS] };
 }
 
+// Known limitation (pre-existing, tracked separately from the shared-lock work):
+// a directory literally named like '..project' directly beneath an allowed root
+// is misclassified as outside by this startsWith('..') check; other path checks
+// (git diff, terraform fmt) share the same pattern. Fail-closed, so no access is
+// granted — such names are simply rejected here.
 // True if `resolved` is inside at least one allowed root (static check; no
 // symlink resolution).
 function withinAnyRoot(resolved) {
@@ -2900,9 +2905,22 @@ app.post('/api/tf/plan-json', async (req, res) => {
     try { JSON.parse(result.stdout); } catch { return res.status(500).json({ error: 'Terraform returned invalid plan JSON' }); }
     res.set('Cache-Control', 'no-store');
     return res.json({ rawJson: result.stdout });
+  } catch (err) {
+    // Unexpected failure (e.g. writing the private plan file): answer once.
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Could not render the saved plan as JSON', details: err.message });
+    }
   } finally {
-    if (tempDir) fs.rmSync(tempDir, { recursive: true, force: true });
     tfRunning.delete(dir);
+    if (tempDir) {
+      try {
+        fs.rmSync(tempDir, { recursive: true, force: true });
+      } catch {
+        // Cleanup failed; the lock is already released above. Answer only when
+        // no response has been sent yet — never a second one after headers.
+        if (!res.headersSent) res.status(500).json({ error: 'Failed to clean up the plan preview' });
+      }
+    }
   }
 });
 
@@ -3095,7 +3113,9 @@ const GIT_MAX_COMMIT_DIFF_FILES = 50; // per-file diffs shown for one commit at 
 const GIT_HASH_RE = /^[0-9a-f]{7,40}$/;
 // Real dir paths with an in-flight *mutating* git op (commit/branch/checkout/
 // merge/rebase/push/pull/fetch/init). Read-only ops (status/diff/branches/
-// remotes) do not take this lock. One mutating op per directory at a time.
+// remotes) do not take this lock. One mutating op per directory at a time;
+// ops that rewrite the working tree (checkout, merge, pull, rebase, branch
+// with checkout) lock on the repository root instead of the subdirectory.
 const gitBusy = new Set();
 
 // Terraform commands and mutating git operations share one rule: nothing else
@@ -3124,22 +3144,47 @@ function projectBusyError(dir) {
 }
 
 // Operations that rewrite tracked files across the whole working tree (checkout,
-// merge, pull, rebase) must be checked against the repository's actual root, not
-// just the requested subdirectory: a checkout started in repo/sub-a rewrites
-// files in repo/sub-b too. Falls back to dir itself when it is not inside a
-// repository or git cannot be consulted (e.g. git init on a fresh directory).
-function worktreeScope(dir) {
+// merge, pull, rebase, branch creation with checkout) must be checked against
+// the repository's actual root, not just the requested subdirectory: a checkout
+// started in repo/sub-a rewrites files in repo/sub-b too. Returns { scope } on
+// success or { code } when the canonical root cannot be determined; callers of
+// working-tree-changing operations must stop instead of falling back to the
+// requested directory (git init is exempt — it creates the repository).
+function resolveWorktreeRoot(dir) {
   return runGit(dir, ['rev-parse', '--show-toplevel']).then(res => {
-    if (res.error || res.timedOut || res.exitCode !== 0) return dir;
-    const top = String(res.stdout || '').trim().split('\n')[0].trim();
-    if (!top) return dir;
+    if (res.error === 'enoent') return { code: 'git-missing' };
+    if (res.error || res.timedOut || res.exitCode !== 0) {
+      return { code: 'lookup-failed', details: gitOutput(res) };
+    }
+    // Parse the first line without trimming it: directory names may contain
+    // leading or trailing spaces that are part of the path.
+    const top = String(res.stdout).split('\n')[0].replace(/\r$/, '');
+    if (!top) return { code: 'empty-root' };
     try {
       // Canonicalize so symlink aliases of the same root compare equal.
-      return fs.realpathSync(top);
+      return { scope: fs.realpathSync(top) };
     } catch {
-      return dir; // root vanished or is unreadable; keep the requested directory
+      return { code: 'unresolvable-root' }; // root vanished or is unreadable
     }
   });
+}
+
+// Resolve the working-tree root for an operation that rewrites tracked files,
+// answering with an informative error when it cannot be determined so the
+// mutation never runs on a lock that does not cover the whole tree. Returns
+// the scope path on success, or null after sending the response.
+async function worktreeScopeOrError(res, dir) {
+  const result = await resolveWorktreeRoot(dir);
+  if (result.scope !== undefined) return result.scope;
+  if (result.code === 'git-missing') {
+    res.status(503).json({ error: 'git executable not found in PATH' });
+    return null;
+  }
+  const message = result.code === 'unresolvable-root'
+    ? 'The git working tree root could not be resolved (it no longer exists or is unreadable)'
+    : 'Could not determine the git working tree root for this directory';
+  res.status(500).json(result.details ? { error: message, details: result.details } : { error: message });
+  return null;
 }
 
 // A safe branch/ref name: starts with a letter or digit, then letters/digits/
@@ -3905,11 +3950,21 @@ app.post('/api/git/branch', async (req, res) => {
   const dir = resolveRepoDir(req, res);
   if (!dir) return;
 
-  const busy = projectBusyError(dir);
+  // With switch:true the endpoint runs `git checkout -b`, which rewrites tracked
+  // files across the whole working tree: check and lock on the repository root.
+  // Without a switch only refs change, so keep the per-directory lock as before.
+  let lockKey = dir;
+  if (switchTo) {
+    const scope = await worktreeScopeOrError(res, dir);
+    if (!scope) return;
+    lockKey = scope;
+  }
+
+  const busy = projectBusyError(lockKey);
   if (busy) {
     return res.status(409).json({ error: busy });
   }
-  gitBusy.add(dir);
+  gitBusy.add(lockKey);
   try {
     const args = switchTo ? ['checkout', '-b', name] : ['branch', name];
     if (from) args.push(from);
@@ -3922,7 +3977,7 @@ app.post('/api/git/branch', async (req, res) => {
     }
     res.json({ created: name, switched: switchTo });
   } finally {
-    gitBusy.delete(dir);
+    gitBusy.delete(lockKey);
   }
 });
 
@@ -3938,7 +3993,8 @@ app.post('/api/git/checkout', async (req, res) => {
   if (!dir) return;
 
   // A checkout rewrites tracked files across the whole working tree.
-  const scope = await worktreeScope(dir);
+  const scope = await worktreeScopeOrError(res, dir);
+  if (!scope) return;
   const busy = projectBusyError(scope);
   if (busy) {
     return res.status(409).json({ error: busy });
@@ -3972,7 +4028,8 @@ app.post('/api/git/merge', async (req, res) => {
   if (!dir) return;
 
   // A merge rewrites tracked files across the whole working tree.
-  const scope = await worktreeScope(dir);
+  const scope = await worktreeScopeOrError(res, dir);
+  if (!scope) return;
   const busy = projectBusyError(scope);
   if (busy) {
     return res.status(409).json({ error: busy });
@@ -4018,7 +4075,8 @@ app.post('/api/git/rebase', async (req, res) => {
   if (!dir) return;
 
   // A rebase rewrites tracked files across the whole working tree.
-  const scope = await worktreeScope(dir);
+  const scope = await worktreeScopeOrError(res, dir);
+  if (!scope) return;
   const busy = projectBusyError(scope);
   if (busy) {
     return res.status(409).json({ error: busy });
@@ -4060,7 +4118,8 @@ app.post('/api/git/rebase-step', async (req, res) => {
   if (!dir) return;
 
   // A rebase step rewrites tracked files across the whole working tree.
-  const scope = await worktreeScope(dir);
+  const scope = await worktreeScopeOrError(res, dir);
+  if (!scope) return;
   const busy = projectBusyError(scope);
   if (busy) {
     return res.status(409).json({ error: busy });
@@ -4297,7 +4356,8 @@ app.post('/api/git/pull', async (req, res) => {
   if (!dir) return;
 
   // A pull merges into the working tree across the whole repository.
-  const scope = await worktreeScope(dir);
+  const scope = await worktreeScopeOrError(res, dir);
+  if (!scope) return;
   const busy = projectBusyError(scope);
   if (busy) {
     return res.status(409).json({ error: busy });
