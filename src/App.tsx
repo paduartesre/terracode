@@ -125,6 +125,10 @@ type TabState = {
   gitDiff: GitFileDiff | null
   gitDiffError: string
   gitDiffLoading: boolean
+  // Line whose number sat at the top of the read-only viewport when Edit was
+  // clicked. FileEditor restores it on mount so entering edit mode keeps the
+  // same lines (and their numbers) in view instead of jumping to line 1.
+  editAnchorLine: number
 }
 
 function newTab(path: string): TabState {
@@ -139,8 +143,24 @@ function newTab(path: string): TabState {
     saveState: 'idle',
     gitDiff: null,
     gitDiffError: '',
-    gitDiffLoading: false
+    gitDiffLoading: false,
+    editAnchorLine: 1
   }
+}
+
+// First read-only row at or below the top edge of the scrolling body — i.e. the
+// line whose number is visible when Edit is clicked. Null rows (files above
+// MAX_GUTTER_LINES render a plain <pre>) have no anchor, so the editor starts
+// at the top as before.
+function computeEditAnchorLine(rowsEl: HTMLDivElement | null): number {
+  if (rowsEl === null) return 1
+  const body = rowsEl.closest('.content-body')
+  if (body === null) return 1
+  const bodyTop = body.getBoundingClientRect().top
+  for (let i = 0; i < rowsEl.children.length; i++) {
+    if ((rowsEl.children[i] as HTMLElement).getBoundingClientRect().top >= bodyTop - 2) return i + 1
+  }
+  return Math.max(1, rowsEl.children.length)
 }
 
 function isDirty(t: TabState): boolean {
@@ -480,7 +500,7 @@ function App() {
     (path: string) => {
       const t = tabsRef.current.find(x => x.path === path)
       if (!t || t.loaded === null || t.error !== '') return
-      updateTab(path, { editing: true, draft: t.loaded.content, reviewing: false, saveState: 'idle', gitDiff: null })
+      updateTab(path, { editing: true, draft: t.loaded.content, reviewing: false, saveState: 'idle', gitDiff: null, editAnchorLine: computeEditAnchorLine(roRowsRef.current) })
     },
     [updateTab],
   )
@@ -955,6 +975,7 @@ function App() {
                 value={active.draft}
                 filePath={active.path}
                 wrap={settings.wordWrap}
+                initialLine={active.editAnchorLine}
                 onChange={d => updateTab(active.path, { draft: d })}
                 findOpen={fileFindOpen}
                 onFindRequest={() => setFileFindOpen(true)}
