@@ -806,6 +806,12 @@ body.sb-resizing {
   box-sizing: border-box;
   /* #root sets text-align: center (Vite template leftover); code must stay left */
   text-align: left;
+  /* Blink does not inherit :root's letter-spacing into <textarea> form controls,
+     so the transparent textarea text and caret would advance per character at a
+     different rate than the highlighted <pre> behind them — glyphs drift right of
+     the caret as you move along a line. Force the inherited value explicitly so
+     both overlay layers share identical metrics. */
+  letter-spacing: inherit;
 }
 
 /* Word wrap on (settings): soft-wrap long lines in the editor. The gutter is hidden

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactElement, type UIEvent } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactElement, type UIEvent } from 'react'
 import { escapeHtml, highlightCode } from './highlight'
 
 type FileEditorProps = {
@@ -7,6 +7,11 @@ type FileEditorProps = {
   // Soft-wrap long lines. The line-number gutter cannot stay aligned with wrapped
   // rows in the overlay layout, so it is hidden while wrapping is on.
   wrap?: boolean
+  // Line whose number was at the top of the read-only view when Edit was clicked.
+  // On mount the caret is placed there and scrolled into view, so entering edit
+  // mode keeps the same lines (and their numbers) visible instead of jumping to
+  // line 1. Ignored for values <= 1 (the default autoFocus position).
+  initialLine?: number
   onChange: (value: string) => void
   // Find-bar open state is controlled by App so the toolbar "Find" button (next
   // to the drift badge) can drive it from any view mode.
@@ -17,7 +22,7 @@ type FileEditorProps = {
   onToggleWrap?: () => void
 }
 
-const FileEditor = ({ value, filePath, wrap = false, onChange, findOpen, onFindRequest, onFindToggle, onFindClose, onToggleWrap }: FileEditorProps): ReactElement => {
+const FileEditor = ({ value, filePath, wrap = false, initialLine, onChange, findOpen, onFindRequest, onFindToggle, onFindClose, onToggleWrap }: FileEditorProps): ReactElement => {
   const preRef = useRef<HTMLPreElement>(null)
   const gutterRef = useRef<HTMLPreElement>(null)
   const taRef = useRef<HTMLTextAreaElement>(null)
@@ -34,6 +39,27 @@ const FileEditor = ({ value, filePath, wrap = false, onChange, findOpen, onFindR
   useEffect(() => {
     if (findOpen) findInputRef.current?.focus()
   }, [findOpen])
+
+  // Restore the read-only view's position on mount: caret to the start of
+  // `initialLine`, scrolled a few lines from the top (same convention as
+  // scrollToIndex). A layout effect so the scroll lands before first paint — no
+  // flash of line 1. Runs once: the key prop remounts this component per file,
+  // so initialLine is fixed for its lifetime.
+  useLayoutEffect(() => {
+    const el = taRef.current
+    if (el === null || initialLine === undefined || initialLine <= 1) return
+    let pos = -1
+    for (let i = 0; i < initialLine - 1; i++) {
+      pos = el.value.indexOf('\n', pos + 1)
+      if (pos === -1) break // past the end of the file: caret goes to the end
+    }
+    const idx = pos === -1 ? el.value.length : pos + 1
+    el.setSelectionRange(idx, idx)
+    updateCursor(el)
+    const lh = parseFloat(getComputedStyle(el).lineHeight) || 24
+    el.scrollTop = Math.max(0, (initialLine - 3) * lh)
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- mount-only effect; initialLine is stable per instance
+  }, [])
 
   const matchCount = useMemo(
     () => (query === '' ? 0 : value.split(query).length - 1),
