@@ -46,6 +46,9 @@ type TerraformPanelProps = {
   findAvailable?: boolean
   findActive?: boolean
   onToggleFind?: () => void
+  // Integrated terminal (owned by App): opens a shell in this project's
+  // directory below the editor. Omitted when the server cannot offer shells.
+  onToggleTerminal?: () => void
 }
 
 const TF_VERSION_RE = /^\d+\.\d+(\.\d+)?(-[A-Za-z0-9.]+)?$/
@@ -220,7 +223,7 @@ function logStatusText(result: TfRunResult): { ok: boolean; text: string } {
 
 type ConsoleEntry = { expr: string; output: string; ok: boolean }
 
-const TerraformPanel = ({ dirPath, projectDir = null, onLoadProject, onFmtApplied, logOpen = false, onToggleLog, onOpenLog, findAvailable = false, findActive = false, onToggleFind }: TerraformPanelProps): ReactElement => {
+const TerraformPanel = ({ dirPath, projectDir = null, onLoadProject, onFmtApplied, logOpen = false, onToggleLog, onOpenLog, findAvailable = false, findActive = false, onToggleFind, onToggleTerminal }: TerraformPanelProps): ReactElement => {
   const [running, setRunning] = useState<TfCommand | null>(null)
   const [result, setResult] = useState<TfRunResult | null>(null)
   const [error, setError] = useState('')
@@ -1047,6 +1050,14 @@ const TerraformPanel = ({ dirPath, projectDir = null, onLoadProject, onFmtApplie
         >
           Login
         </button>
+        {onToggleTerminal !== undefined && (
+          <button
+            onClick={onToggleTerminal}
+            title={`Open/close the integrated terminal in ${dirPath} (Ctrl+\`) — runs with your normal shell permissions, independent of the toolbar locks`}
+          >
+            Terminal
+          </button>
+        )}
       </div>
 
       {initOptionsOpen && (

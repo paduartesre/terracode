@@ -58,6 +58,7 @@ let stopping = false;
 function stop(code) {
   if (stopping) return;
   stopping = true;
+  api.stopTerminals?.(); // terminate any terminal shells before the servers close
   api.stopFileWatcher();
   web.close();
   backend.close();

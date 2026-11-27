@@ -929,3 +929,192 @@ export function openFileEvents(onChange: (paths: string[]) => void): () => void 
   }
   return () => source.close()
 }
+
+// --- Integrated terminal -----------------------------------------------------
+// Every session operation carries the instance-scoped token in a custom header
+// (the server validates loopback Host/Origin on top of that). The token is kept
+// in memory only: it changes with every server start, so nothing is persisted.
+
+export type TerminalSessionState = 'starting' | 'running' | 'exited' | 'closed' | 'failed'
+
+export type TerminalSessionInfo = {
+  id: string
+  state: TerminalSessionState
+  dir: string
+  exitStatus?: number
+  failReason?: string
+  closeReason?: string
+}
+
+let terminalToken: string | null = null
+
+async function readError(res: Response): Promise<never> {
+  let message = `Request failed (${res.status})`
+  try {
+    const body = (await res.json()) as { error?: string }
+    if (body.error) message = body.error
+  } catch {
+    // non-JSON error body; keep the status-based message
+  }
+  throw new Error(message)
+}
+
+// Fetch (and cache in memory) the instance token. A 401 on a session operation
+// means the server restarted and rotated it: clear the cache and retry once.
+export async function getTerminalToken(): Promise<string> {
+  const res = await fetch(`${API_BASE}/api/terminal/token`)
+  if (!res.ok) return readError(res)
+  const body = (await res.json()) as { token: string }
+  terminalToken = body.token
+  return body.token
+}
+
+async function terminalRequest<T>(url: string, init?: RequestInit): Promise<T> {
+  const doFetch = (token: string) => fetch(url, { ...init, headers: { ...(init?.headers ?? {}), 'X-TerraCode-Token': token } })
+  let res = terminalToken !== null ? await doFetch(terminalToken) : await doFetch(await getTerminalToken())
+  if (res.status === 401 && terminalToken !== null) {
+    terminalToken = null // stale: the server restarted and rotated its token
+    res = await doFetch(await getTerminalToken())
+  }
+  if (!res.ok) return readError(res)
+  return (await res.json()) as T
+}
+
+export type TerminalStatus = {
+  available: boolean
+  reason?: string
+  maxSessions: number
+}
+
+// Informational probe (no token needed): whether the server can offer shells at all.
+export function getTerminalStatus(): Promise<TerminalStatus> {
+  return fetch(`${API_BASE}/api/terminal/status`).then(res => res.ok ? res.json() as Promise<TerminalStatus> : readError(res))
+}
+
+export function listTerminalSessions(): Promise<{ sessions: TerminalSessionInfo[] }> {
+  return terminalRequest<{ sessions: TerminalSessionInfo[] }>(`${API_BASE}/api/terminal/sessions`)
+}
+
+export function createTerminalSession(dirPath: string): Promise<TerminalSessionInfo> {
+  return terminalRequest<TerminalSessionInfo>(`${API_BASE}/api/terminal/sessions`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ path: dirPath })
+  })
+}
+
+export function closeTerminalSession(id: string): Promise<{ id: string; state: string }> {
+  return terminalRequest<{ id: string; state: string }>(`${API_BASE}/api/terminal/sessions/${id}/close`, { method: 'POST' })
+}
+
+export function restartTerminalSession(id: string): Promise<{ id: string; state: TerminalSessionState }> {
+  return terminalRequest<{ id: string; state: TerminalSessionState }>(`${API_BASE}/api/terminal/sessions/${id}/restart`, { method: 'POST' })
+}
+
+// Raw PTY input — the bytes go to the shell's PTY exactly as typed.
+export function sendTerminalInput(id: string, data: string): Promise<{ ok: boolean }> {
+  return terminalRequest<{ ok: boolean }>(`${API_BASE}/api/terminal/sessions/${id}/input`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ data })
+  })
+}
+
+export function resizeTerminal(id: string, cols: number, rows: number): Promise<{ ok: boolean }> {
+  return terminalRequest<{ ok: boolean }>(`${API_BASE}/api/terminal/sessions/${id}/resize`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ cols, rows })
+  })
+}
+
+export type TerminalStreamHandlers = {
+  onHello?: (state: TerminalSessionState, dir: string) => void
+  onReplay?: (text: string) => void
+  onData?: (text: string) => void
+  onExit?: (status: number | null, signal: string | null) => void
+  onError?: (message: string) => void
+  onClose?: (reason: string) => void
+}
+
+// SSE output stream over fetch (EventSource cannot send the auth header). The
+// connection staying open is what keeps a minimized panel alive; returning the
+// cancel function drops it, which terminates the shell server-side. A 401 on
+// connect means the server rotated its token: refetch once and retry.
+export function connectTerminalStream(id: string, handlers: TerminalStreamHandlers): () => void {
+  const controller = new AbortController()
+
+  type ConnectError = Error & { status?: number }
+
+  const run = async (token: string) => {
+    const res = await fetch(`${API_BASE}/api/terminal/sessions/${id}/stream`, {
+      headers: { 'X-TerraCode-Token': token },
+      signal: controller.signal
+    })
+    if (!res.ok || !res.body) {
+      let message = `Request failed (${res.status})`
+      try {
+        const body = (await res.json()) as { error?: string }
+        if (body.error) message = body.error
+      } catch {
+        // non-JSON body; keep the status-based message
+      }
+      const err = new Error(message) as ConnectError
+      err.status = res.status
+      throw err
+    }
+
+    const reader = res.body.getReader()
+    const decoder = new TextDecoder()
+    let buf = ''
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buf += decoder.decode(value, { stream: true })
+      // SSE frames are separated by a blank line; ": hb" heartbeats carry no data.
+      let sep
+      while ((sep = buf.indexOf('\n\n')) !== -1) {
+        const frame = buf.slice(0, sep)
+        buf = buf.slice(sep + 2)
+        for (const line of frame.split('\n')) {
+          if (!line.startsWith('data: ')) continue
+          let msg: { type?: string; state?: TerminalSessionState; dir?: string; text?: string; status?: number | null; signal?: string | null; message?: string; reason?: string }
+          try {
+            msg = JSON.parse(line.slice(6))
+          } catch {
+            continue
+          }
+          if (msg.type === 'hello' && typeof msg.state === 'string') handlers.onHello?.(msg.state, msg.dir ?? '')
+          else if (msg.type === 'replay' && typeof msg.text === 'string') handlers.onReplay?.(msg.text)
+          else if (msg.type === 'data' && typeof msg.text === 'string') handlers.onData?.(msg.text)
+          else if (msg.type === 'exit') handlers.onExit?.(msg.status ?? null, msg.signal ?? null)
+          else if (msg.type === 'error') handlers.onError?.(msg.message ?? 'The terminal session failed to start')
+          else if (msg.type === 'closed') handlers.onClose?.(msg.reason ?? 'user')
+        }
+      }
+    }
+  }
+
+  const start = async () => {
+    try {
+      await run(terminalToken ?? (await getTerminalToken()))
+    } catch (err) {
+      if (controller.signal.aborted) return
+      // A stale token (server restart) surfaces as a 401: refetch once and retry.
+      const status = err instanceof Error ? (err as ConnectError).status : undefined
+      if (status === 401 && terminalToken !== null) {
+        terminalToken = null
+        try {
+          await run(await getTerminalToken())
+          return
+        } catch {
+          // fall through to the error handler below
+        }
+      }
+      handlers.onError?.(err instanceof Error ? err.message : 'Could not connect to the terminal stream')
+    }
+  }
+
+  void start()
+  return () => controller.abort()
+}
