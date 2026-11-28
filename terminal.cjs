@@ -138,10 +138,12 @@ function resolveShell() {
 // tfenv's bin dir on PATH plus cloud credentials for active login sessions,
 // computed fresh at every spawn/restart so a new shell sees current state. The
 // app-internal authorization secret never reaches a shell either way.
-let spawnEnvProvider = null; // set by createTerminalApi
-
-function terminalSpawnEnv() {
-  const env = spawnEnvProvider ? { ...spawnEnvProvider() } : { ...process.env };
+// The provider is threaded per call (not stored in shared module state) so that
+// multiple host-app instances — e.g. a test re-importing server.cjs after
+// vi.resetModules() while terminal.cjs stays cached — each keep their own env
+// source instead of the last-registered one overwriting the rest.
+function terminalSpawnEnv(envProvider) {
+  const env = typeof envProvider === 'function' ? { ...envProvider() } : { ...process.env };
   delete env.TERACODE_TERMINAL_TOKEN;
   return env;
 }
@@ -271,7 +273,7 @@ function closeSession(record, reason) {
 }
 
 // Spawn a shell for a record that is in 'starting' or being restarted.
-function spawnFor(record) {
+function spawnFor(record, envProvider) {
   const pty = loadPty();
   if (!pty) {
     releaseRecord(record, 'failed', { failReason: ptyLoadError });
@@ -291,7 +293,7 @@ function spawnFor(record) {
       cols: record.cols,
       rows: record.rows,
       cwd: record.dir,
-      env: terminalSpawnEnv(),
+      env: terminalSpawnEnv(envProvider),
     });
   } catch (err) {
     releaseRecord(record, 'failed', { failReason: `could not start the shell (${err.message})` });
@@ -459,7 +461,8 @@ function findSession(req, res) {
 // --- routes -----------------------------------------------------------------
 
 function createTerminalApi(app, { resolveSafe, respondResolve, port, allowedOrigins, spawnEnvProvider: envProvider }) {
-  if (typeof envProvider === 'function') spawnEnvProvider = envProvider;
+  // envProvider is captured by the route closures below (per app instance), so
+  // re-registering the API on another express app never changes this one's env.
   const { checkHostAndOrigin, requireAuth } = makeGuards(port, allowedOrigins);
 
   // Instance token for the UI client. Guarded by Host/Origin only (the token is
@@ -552,7 +555,7 @@ function createTerminalApi(app, { resolveSafe, respondResolve, port, allowedOrig
     };
     sessions.set(record.id, record);
     startViewerTimeout(record);
-    spawnFor(record);
+    spawnFor(record, envProvider);
 
     res.status(201).json({ id: record.id, state: record.state, dir: record.dir });
   });
@@ -708,7 +711,7 @@ function createTerminalApi(app, { resolveSafe, respondResolve, port, allowedOrig
     record.bufferBytes = 0;
     record.state = 'starting';
     startViewerTimeout(record);
-    spawnFor(record);
+    spawnFor(record, envProvider);
     res.json({ id: record.id, state: record.state });
   });
 

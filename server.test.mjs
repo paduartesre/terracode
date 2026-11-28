@@ -5729,8 +5729,6 @@ describe('terminal (/api/terminal/*)', () => {
 
     process.env.TERMINAL_SHELL = fakeShell
     try {
-      const preStatus = await request(app).get('/api/cloud/status')
-      console.log('DIAG status before spawn:', JSON.stringify(preStatus.body))
       const session = (await authedTerm(request(app).post('/api/terminal/sessions').set('Content-Type', 'application/json').send({ path: root }))).body
       await waitForMarker(dumpFile)
       const envDump = fs.readFileSync(dumpFile, 'utf-8')
