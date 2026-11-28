@@ -15,6 +15,7 @@ const fs = require('fs');
 const net = require('net');
 const os = require('os');
 const path = require('path');
+const { createTerminalApi, stopAllTerminalSessions, setPtyLoaderForTests } = require('./terminal.cjs');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -81,15 +82,15 @@ const CONTENT_TOO_LARGE = { error: `Content too large (limit ${MAX_FILE_SIZE / 1
 const MTIME_EPSILON_MS = 1;
 const HOST = process.env.HOST || '127.0.0.1'; // localhost only, no LAN exposure
 
-// Only the Vite dev (5173) and preview (4173) origins may call this API from a browser
-app.use(cors({
-  origin: [
-    'http://localhost:5173',
-    'http://127.0.0.1:5173',
-    'http://localhost:4173',
-    'http://127.0.0.1:4173',
-  ],
-}));
+// Only the Vite dev (5173) and preview (4173) origins may call this API from a browser.
+// Shared with the terminal API's Origin validation (terminal.cjs).
+const ALLOWED_ORIGINS = [
+  'http://localhost:5173',
+  'http://127.0.0.1:5173',
+  'http://localhost:4173',
+  'http://127.0.0.1:4173',
+];
+app.use(cors({ origin: ALLOWED_ORIGINS }));
 app.use(express.json({ limit: '2mb' }));
 
 function expandHome(p) {
@@ -1220,11 +1221,16 @@ function spawnCaptured(file, args, cwd, timeoutMs, env = process.env, onChunk, s
 // onChunk (optional) receives raw stdout/stderr chunks as it arrives; stdin
 // (optional string) is piped to the process (used by console-eval); extraEnv
 // (optional object) adds per-run environment variables (cloud credentials).
-function runTerraform(cwd, args, onChunk, stdin, extraEnv, maxBytes) {
+// Base environment for terraform child processes: the server's environment with
+// tfenv's bin dir prepended so `terraform` resolves to the managed binary. Shared
+// by button-triggered runs and interactive terminal shells (see below).
+function terraformBaseEnv() {
   const binDir = tfenvBinDir();
-  const baseEnv = binDir
-    ? { ...process.env, PATH: `${binDir}${path.delimiter}${process.env.PATH || ''}` }
-    : process.env;
+  return binDir ? { ...process.env, PATH: `${binDir}${path.delimiter}${process.env.PATH || ''}` } : process.env;
+}
+
+function runTerraform(cwd, args, onChunk, stdin, extraEnv, maxBytes) {
+  const baseEnv = terraformBaseEnv();
   const env = extraEnv && Object.keys(extraEnv).length > 0 ? { ...baseEnv, ...extraEnv } : baseEnv;
   return spawnCaptured('terraform', args, cwd, TF_TIMEOUT_MS, env, onChunk, stdin, maxBytes);
 }
@@ -4546,10 +4552,40 @@ function stopFileWatcher() {
   }
 }
 
+// Integrated terminal API (/api/terminal/*): loopback Host + Origin validation
+// plus the instance-scoped token on every session operation. Registered after
+// the JSON body parser so malformed or non-JSON bodies are rejected before any
+// PTY could be allocated; CORS preflights (OPTIONS) never reach these routes.
+// Interactive shells inherit exactly what button-triggered terraform runs get:
+// tfenv's bin dir on PATH plus cloud credentials for every provider with an
+// active login session, computed fresh at each spawn/restart (a running shell
+// keeps its environment until it is restarted). Using the credentials refreshes
+// the unlock TTL, exactly as /api/tf/run does.
+function terminalSpawnEnvProvider() {
+  const baseEnv = terraformBaseEnv();
+  const credEnv = buildCloudEnv();
+  if (Object.keys(credEnv).length > 0) setCredUnlock(credUnlockedPayload); // refresh on use
+  return Object.keys(credEnv).length > 0 ? { ...baseEnv, ...credEnv } : baseEnv;
+}
+
+createTerminalApi(app, { resolveSafe, respondResolve, port: Number(PORT), allowedOrigins: ALLOWED_ORIGINS, spawnEnvProvider: terminalSpawnEnvProvider });
+
 // Start server (localhost only by default; set HOST to override).
 // Export the app so tests can drive it via supertest without binding a port.
 if (require.main === module) {
   startFileWatcher();
+  // Terminate terminal sessions on shutdown so no shell outlives the process.
+  // Await the full SIGHUP→SIGKILL escalation before exiting: an immediate exit
+  // would skip the SIGKILL pass and leave behind children that ignore SIGHUP.
+  for (const signal of ['SIGINT', 'SIGTERM']) {
+    process.on(signal, () => {
+      void (async () => {
+        await stopAllTerminalSessions();
+        stopFileWatcher();
+        process.exit(signal === 'SIGINT' ? 0 : 143);
+      })();
+    });
+  }
   app.listen(PORT, HOST, () => {
     console.log(`Server running on http://${HOST}:${PORT}`);
     console.log(`Allowed roots: ${allRoots().join(', ')}`);
@@ -4560,3 +4596,8 @@ if (require.main === module) {
 module.exports = app;
 module.exports.startFileWatcher = startFileWatcher;
 module.exports.stopFileWatcher = stopFileWatcher;
+module.exports.stopTerminals = stopAllTerminalSessions;
+// Test-only seam: under vitest's module runner a direct import of ./terminal.cjs
+// from a test file can yield a different instance than the one required here,
+// so tests reach the loader cache through this same-instance export.
+module.exports.setPtyLoaderForTests = setPtyLoaderForTests;

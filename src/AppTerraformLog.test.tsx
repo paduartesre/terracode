@@ -1,10 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import App from './App'
-import { getTfCostAvailability, getTfStateInfo, getTfVersions, listDir, listTfVarFiles, readFileContent, runTerraform, runTerraformStream } from './api'
+import { getTerminalStatus, getTfCostAvailability, getTfStateInfo, getTfVersions, listDir, listTfVarFiles, readFileContent, runTerraform, runTerraformStream } from './api'
 
 vi.mock('./api', async importOriginal => ({
   ...await importOriginal<typeof import('./api')>(),
+  // The terminal probe must not reach a real server: with one running on
+  // localhost:3001 the panel would restore live sessions and instantiate xterm.
+  getTerminalStatus: vi.fn(),
   getTfCostAvailability: vi.fn(),
   getTfStateInfo: vi.fn(),
   getTfVersions: vi.fn(),
@@ -26,6 +29,7 @@ describe('Terraform log in the application', () => {
     vi.mocked(getTfStateInfo).mockResolvedValue({ initialized: false, backend: null, localState: null })
     vi.mocked(listTfVarFiles).mockResolvedValue({ files: [] })
     vi.mocked(getTfCostAvailability).mockResolvedValue({ available: false })
+    vi.mocked(getTerminalStatus).mockResolvedValue({ available: false, reason: 'unavailable in tests', maxSessions: 4 })
     vi.mocked(runTerraform).mockResolvedValue({ command: 'workspace-list', exitCode: 0, timedOut: false, workspaces: [], output: '' })
     vi.mocked(runTerraformStream).mockImplementation((command, _dir, handlers) => {
       queueMicrotask(() => {

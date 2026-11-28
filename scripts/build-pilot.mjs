@@ -42,8 +42,13 @@ async function walk(directory) {
 }
 const webFiles = await walk('dist');
 if (webFiles.some(f => f.endsWith('.map'))) throw new Error('Source maps must not be distributed');
+// node-pty is a native addon and cannot be bundled into the SEA blob. It stays
+// external so the packaged executable starts normally with the terminal feature
+// reporting itself unavailable (terminal.cjs loads it lazily). Shipping it in
+// pilot packages would require per-OS/per-architecture binaries; that packaging
+// is defined before terminal support is advertised for SEA or native Windows.
 const common = { bundle: true, platform: 'node', target: 'node24', format: 'cjs', minify: true, sourcemap: false, legalComments: 'none', metafile: true };
-const backend = await build({ ...common, entryPoints: ['scripts/pilot-entry.cjs'], outfile: '.pilot-build/application.cjs', external: ['fsevents'], define: { PILOT_SOURCE_COMMIT: JSON.stringify(sourceCommit) } });
+const backend = await build({ ...common, entryPoints: ['scripts/pilot-entry.cjs'], outfile: '.pilot-build/application.cjs', external: ['fsevents', 'node-pty'], define: { PILOT_SOURCE_COMMIT: JSON.stringify(sourceCommit) } });
 await bytenode.compileFile({ filename: path.join(staging, 'application.cjs'), output: path.join(staging, 'application.jsc'), compileAsModule: true, sourceMap: false });
 const loader = await build({ ...common, entryPoints: ['scripts/sea-bootstrap.cjs'], outfile: '.pilot-build/bootstrap.cjs', external: ['electron'] });
 const assets = { 'application.jsc': path.join(staging, 'application.jsc') };

@@ -657,6 +657,10 @@ beforeAll(async () => {
   // fake bin dir (TFENV_BIN) since detection is dynamic per request.
   process.env.TFENV_DISABLE = '1'
 
+  // Pin the terminal's instance-scoped token so tests can assert on it and so
+  // the env-leak test can verify the server strips it from spawned shells.
+  process.env.TERACODE_TERMINAL_TOKEN = 'test-terminal-token-0123456789abcdef'
+
   process.env.BASE_DIR = root
   serverModule = await import('./server.cjs')
   app = serverModule.default
@@ -5348,4 +5352,538 @@ describe('shared lock with real Git (no remote)', () => {
     expect(realGit(repo, ['rev-parse', '--abbrev-ref', 'HEAD'])).toBe('new-branch')
     expect(fs.readFileSync(path.join(infra, 'main.tf'), 'utf-8')).toBe('resource "c" "d" {}\n')
   }, 20_000)
+})
+
+// --- Integrated terminal (/api/terminal/*) ----------------------------------
+// The suite pins TERACODE_TERMINAL_TOKEN (see beforeAll); every request must
+// also present a loopback Host header because supertest binds an ephemeral
+// port. Stream tests drive the SSE endpoint over real sockets so viewers can
+// disconnect mid-session.
+
+describe('terminal (/api/terminal/*)', () => {
+  const TERM_HOST = `localhost:${process.env.PORT || 3001}`
+  // Read lazily: the file-level beforeAll pins this env var after module
+  // evaluation, so a top-of-file const would capture undefined.
+  let TOKEN = null
+  let listener = null
+  let port = null
+
+  // All terminal requests must carry the loopback Host (supertest's own host
+  // header names an ephemeral port and is rejected by design).
+  const termReq = req => req.set('Host', TERM_HOST)
+  const authedTerm = req => termReq(req).set('X-TerraCode-Token', TOKEN)
+
+  // Minimal SSE client over a real socket: collects parsed data frames so tests
+  // can wait for specific events and disconnect at will.
+  class StreamClient {
+    constructor(res, req) {
+      this.req = req
+      this.frames = []
+      this.waiters = []
+      let buf = ''
+      res.on('data', chunk => {
+        buf += chunk.toString()
+        let sep
+        while ((sep = buf.indexOf('\n\n')) !== -1) {
+          const frame = buf.slice(0, sep)
+          buf = buf.slice(sep + 2)
+          for (const line of frame.split('\n')) {
+            if (!line.startsWith('data: ')) continue
+            try {
+              this.frames.push(JSON.parse(line.slice(6)))
+            } catch {
+              // malformed frame; ignore it
+            }
+          }
+        }
+        for (let i = this.waiters.length - 1; i >= 0; i--) {
+          const w = this.waiters[i]
+          const frame = this.frames.find(f => f.type === w.type)
+          if (!frame) continue
+          this.waiters.splice(i, 1)
+          clearTimeout(w.timer)
+          w.resolve(frame)
+        }
+      })
+    }
+
+    static connect(streamPort, id) {
+      return new Promise((resolve, reject) => {
+        const req = http.get(
+          { host: '127.0.0.1', port: streamPort, path: `/api/terminal/sessions/${id}/stream`, headers: { Host: TERM_HOST, 'X-TerraCode-Token': TOKEN } },
+          res => resolve(new StreamClient(res, req)),
+        )
+        req.on('error', reject)
+      })
+    }
+
+    waitFrame(type, timeoutMs = 5000) {
+      const existing = this.frames.find(f => f.type === type)
+      if (existing) return Promise.resolve(existing)
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+          const i = this.waiters.indexOf(entry)
+          if (i !== -1) this.waiters.splice(i, 1)
+          reject(new Error(`Timed out waiting for ${type} frame; got: ${JSON.stringify(this.frames.map(f => f.type))}`))
+        }, timeoutMs)
+        const entry = { type, timer, resolve }
+        this.waiters.push(entry)
+      })
+    }
+
+    close() {
+      this.req.destroy()
+    }
+  }
+
+  beforeAll(async () => {
+    TOKEN = process.env.TERACODE_TERMINAL_TOKEN
+    expect(TOKEN).toBeTruthy() // the file-level beforeAll must have pinned it
+    listener = app.listen(0)
+    await new Promise(resolve => listener.once('listening', resolve))
+    port = listener.address().port
+  })
+
+  afterAll(async () => {
+    if (listener !== null) await new Promise(resolve => listener.close(resolve))
+  })
+
+  const listSessions = async () => (await authedTerm(request(app).get('/api/terminal/sessions'))).body.sessions
+  const closeAll = async () => {
+    for (const s of await listSessions()) {
+      if (s.state !== 'closed') await request(app).post(`/api/terminal/sessions/${s.id}/close`).set('Host', TERM_HOST).set('X-TerraCode-Token', TOKEN)
+    }
+  }
+
+  it('status reports availability without a token and validates origin/host', async () => {
+    const res = await termReq(request(app).get('/api/terminal/status'))
+    expect(res.status).toBe(200)
+    expect(res.body).toEqual({ available: true, maxSessions: 4 })
+    expect(res.headers['cache-control']).toBe('no-store')
+
+    // An exact UI origin is fine; anything else — including "null" — is not.
+    expect((await termReq(request(app).get('/api/terminal/status').set('Origin', 'http://localhost:5173'))).status).toBe(200)
+    expect((await termReq(request(app).get('/api/terminal/status').set('Origin', 'http://evil.example'))).status).toBe(403)
+    expect((await termReq(request(app).get('/api/terminal/status').set('Origin', 'null'))).status).toBe(403)
+    // A non-loopback Host is rejected even without an Origin.
+    expect((await request(app).get('/api/terminal/status').set('Host', `evil.example:${process.env.PORT || 3001}`)).status).toBe(403)
+  })
+
+  it('serves the instance token with no-store and rejects foreign hosts', async () => {
+    const res = await termReq(request(app).get('/api/terminal/token'))
+    expect(res.status).toBe(200)
+    expect(res.body.token).toBe(TOKEN)
+    expect(res.headers['cache-control']).toBe('no-store')
+    expect((await request(app).get('/api/terminal/token').set('Host', `evil.example:${process.env.PORT || 3001}`)).status).toBe(403)
+  })
+
+  it('rejects unauthorized session operations before allocating anything', async () => {
+    // No token / wrong token: 401, and no PTY may be created.
+    expect((await termReq(request(app).post('/api/terminal/sessions').set('Content-Type', 'application/json').send({ path: root }))).status).toBe(401)
+    expect((await termReq(request(app).post('/api/terminal/sessions').set('Content-Type', 'application/json').set('X-TerraCode-Token', 'wrong').send({ path: root }))).status).toBe(401)
+    // Every other operation requires the token too.
+    const id = (await authedTerm(request(app).get('/api/terminal/sessions'))).body.sessions[0]?.id ?? 'a'.repeat(32)
+    for (const [method, url] of [['GET', `/api/terminal/sessions/${id}/stream`], ['POST', `/api/terminal/sessions/${id}/input`], ['POST', `/api/terminal/sessions/${id}/resize`], ['POST', `/api/terminal/sessions/${id}/restart`], ['POST', `/api/terminal/sessions/${id}/close`]]) {
+      const res = method === 'GET' ? await termReq(request(app).get(url)) : await termReq(request(app).post(url).set('Content-Type', 'application/json').send({}))
+      expect(res.status).toBe(401)
+    }
+    // A permitted CORS preflight is answered without creating a session.
+    const preflight = await request(app).options('/api/terminal/sessions')
+      .set('Origin', 'http://localhost:5173')
+      .set('Access-Control-Request-Method', 'POST')
+      .set('Access-Control-Request-Headers', 'content-type,x-terracode-token')
+    expect(preflight.status).toBe(204)
+    expect((await listSessions()).length).toBe(0)
+  })
+
+  it('rejects bad origins and hosts on session operations', async () => {
+    const body = { path: root }
+    expect((await termReq(request(app).post('/api/terminal/sessions').set('Content-Type', 'application/json').set('Origin', 'http://evil.example').send(body))).status).toBe(403)
+    expect((await termReq(request(app).post('/api/terminal/sessions').set('Content-Type', 'application/json').set('Origin', 'null').send(body))).status).toBe(403)
+    expect((await request(app).post('/api/terminal/sessions').set('Host', `evil.example:${process.env.PORT || 3001}`).set('X-TerraCode-Token', TOKEN).set('Content-Type', 'application/json').send(body)).status).toBe(403)
+    // Rejected requests must not have created a shell.
+    expect((await listSessions()).length).toBe(0)
+  })
+
+  it('validates the starting directory before spawning a shell', async () => {
+    const post = p => authedTerm(request(app).post('/api/terminal/sessions').set('Content-Type', 'application/json').send(p))
+    expect((await post({ path: '/etc' })).status).toBe(403) // outside every allowed root
+    expect((await post({ path: path.join(root, 'link-dir') })).status).toBe(403) // symlink escaping the root
+    expect((await post({ path: path.join(base, 'outside.txt') })).status).toBe(403)
+    expect((await post({ path: path.join(root, 'missing-dir') })).status).toBe(404)
+    expect((await post({ path: path.join(root, 'hello.txt') })).status).toBe(400) // not a directory
+    expect((await post({})).status).toBe(400) // no path at all
+    expect((await listSessions()).length).toBe(0)
+  })
+
+  it('creates a session and streams shell output to the viewer', async () => {
+    const created = await authedTerm(request(app).post('/api/terminal/sessions').set('Content-Type', 'application/json').send({ path: root }))
+    expect(created.status).toBe(201)
+    expect(created.body.id).toMatch(/^[a-f0-9]{32}$/) // 128-bit identifier
+    expect(['starting', 'running']).toContain(created.body.state)
+    expect(created.body.dir).toBe(fs.realpathSync(root))
+
+    const stream = await StreamClient.connect(port, created.body.id)
+    try {
+      const hello = await stream.waitFrame('hello')
+      expect(hello.dir).toBe(fs.realpathSync(root))
+      const input = await authedTerm(request(app).post(`/api/terminal/sessions/${created.body.id}/input`).set('Content-Type', 'application/json').send({ data: 'echo tc-smoke-42\n' }))
+      expect(input.status).toBe(200)
+      expect(input.body.ok).toBe(true)
+      const data = await stream.waitFrame('data')
+      expect(data.text).toContain('tc-smoke-42')
+    } finally {
+      stream.close()
+    }
+    // The viewer disconnected: the session must be terminated, not kept alive.
+    let state = null
+    for (let i = 0; i < 50 && state === null; i++) {
+      const s = (await listSessions()).find(x => x.id === created.body.id)
+      if (s.state === 'closed') state = s
+      else await new Promise(r => setTimeout(r, 100))
+    }
+    expect(state).not.toBeNull()
+    expect(state.closeReason).toBe('viewer-disconnect')
+  })
+
+  it('validates resize dimensions and input type/size', async () => {
+    const created = (await authedTerm(request(app).post('/api/terminal/sessions').set('Content-Type', 'application/json').send({ path: root }))).body
+    const stream = await StreamClient.connect(port, created.id) // keep it alive while probing
+    try {
+      const resize = b => authedTerm(request(app).post(`/api/terminal/sessions/${created.id}/resize`).set('Content-Type', 'application/json').send(b))
+      expect((await resize({ cols: 100, rows: 30 })).status).toBe(200)
+      expect((await resize({ cols: 0, rows: 30 })).status).toBe(400)
+      expect((await resize({ cols: 100, rows: -5 })).status).toBe(400)
+      expect((await resize({ cols: 'x', rows: 30 })).status).toBe(400)
+      expect((await resize({ cols: 9999, rows: 30 })).status).toBe(400)
+
+      const input = b => authedTerm(request(app).post(`/api/terminal/sessions/${created.id}/input`).set('Content-Type', 'application/json').send(b))
+      expect((await input({ data: 123 })).status).toBe(400) // not a string
+      expect((await input({})).status).toBe(400) // missing field
+      expect((await input({ data: 'a'.repeat(300 * 1024) })).status).toBe(400) // over the per-request cap
+    } finally {
+      stream.close()
+    }
+    await closeAll()
+  })
+
+  it('kills background children when a session closes', async () => {
+    const created = (await authedTerm(request(app).post('/api/terminal/sessions').set('Content-Type', 'application/json').send({ path: root }))).body
+    const stream = await StreamClient.connect(port, created.id)
+    let childPid = 0 // declared outside the try so the post-close assertions can use it
+    try {
+      // Start a background child in the shell; it outlives the shell itself.
+      await authedTerm(request(app).post(`/api/terminal/sessions/${created.id}/input`).set('Content-Type', 'application/json')
+        .send({ data: `sleep 30 & echo $! > ${root}/.term-child.pid\n` }))
+      await waitForMarker(path.join(root, '.term-child.pid'))
+      childPid = Number(fs.readFileSync(path.join(root, '.term-child.pid'), 'utf-8').trim())
+      expect(childPid).toBeGreaterThan(0) // the marker held a real pid
+      expect(() => process.kill(childPid, 0)).not.toThrow() // alive while the session runs
+
+      const closed = await authedTerm(request(app).post(`/api/terminal/sessions/${created.id}/close`))
+      expect(closed.status).toBe(200)
+    } finally {
+      stream.close()
+    }
+    expect(childPid).toBeGreaterThan(0) // guard: the check below is meaningful, not a scope accident
+    // SIGHUP first, SIGKILL to the whole session after a grace period. Only
+    // ESRCH proves the process is gone; any other error (EPERM, …) must fail
+    // the test instead of masquerading as success.
+    let gone = false
+    for (let i = 0; i < 60 && !gone; i++) {
+      try {
+        process.kill(childPid, 0)
+      } catch (err) {
+        if (err.code === 'ESRCH') gone = true
+        else throw err
+      }
+      if (!gone) await new Promise(r => setTimeout(r, 100))
+    }
+    expect(gone).toBe(true) // the background child must not outlive the terminal
+    fs.rmSync(path.join(root, '.term-child.pid'), { force: true })
+  })
+
+  it('reports the exit status when the shell exits on its own', async () => {
+    const created = (await authedTerm(request(app).post('/api/terminal/sessions').set('Content-Type', 'application/json').send({ path: root }))).body
+    const stream = await StreamClient.connect(port, created.id)
+    try {
+      await authedTerm(request(app).post(`/api/terminal/sessions/${created.id}/input`).set('Content-Type', 'application/json').send({ data: 'exit\n' }))
+      const exitFrame = await stream.waitFrame('exit')
+      expect(exitFrame.status).toBe(0)
+
+      const s = (await listSessions()).find(x => x.id === created.id)
+      expect(s.state).toBe('exited')
+      expect(s.exitStatus).toBe(0)
+      // Operations on a dead session are rejected with 409.
+      expect((await authedTerm(request(app).post(`/api/terminal/sessions/${created.id}/input`).set('Content-Type', 'application/json').send({ data: 'x\n' }))).status).toBe(409)
+      expect((await authedTerm(request(app).post(`/api/terminal/sessions/${created.id}/resize`).set('Content-Type', 'application/json').send({ cols: 80, rows: 24 }))).status).toBe(409)
+    } finally {
+      stream.close()
+    }
+
+    // An explicit restart brings a fresh shell back in the same bound directory.
+    const restarted = await authedTerm(request(app).post(`/api/terminal/sessions/${created.id}/restart`))
+    expect(restarted.status).toBe(200)
+    let running = false
+    for (let i = 0; i < 50 && !running; i++) {
+      const s = (await listSessions()).find(x => x.id === created.id)
+      if (s.state === 'running') running = true
+      else await new Promise(r => setTimeout(r, 100))
+    }
+    expect(running).toBe(true)
+    const stream2 = await StreamClient.connect(port, created.id)
+    try {
+      await authedTerm(request(app).post(`/api/terminal/sessions/${created.id}/input`).set('Content-Type', 'application/json').send({ data: 'echo tc-restart-7\n' }))
+      expect((await stream2.waitFrame('data')).text).toContain('tc-restart-7')
+    } finally {
+      stream2.close()
+    }
+    await closeAll()
+  })
+
+  it('rejects restarting closed sessions and unknown or malformed ids', async () => {
+    const created = (await authedTerm(request(app).post('/api/terminal/sessions').set('Content-Type', 'application/json').send({ path: root }))).body
+    await new Promise(r => setTimeout(r, 300)) // let it reach running
+    await authedTerm(request(app).post(`/api/terminal/sessions/${created.id}/close`))
+    expect((await authedTerm(request(app).post(`/api/terminal/sessions/${created.id}/restart`))).status).toBe(409)
+
+    const unknown = 'f'.repeat(32)
+    expect((await authedTerm(request(app).get(`/api/terminal/sessions/${unknown}/stream`))).status).toBe(404)
+    for (const op of ['input', 'resize', 'restart', 'close']) {
+      expect((await authedTerm(request(app).post(`/api/terminal/sessions/${unknown}/${op}`).set('Content-Type', 'application/json').send({}))).status).toBe(404)
+    }
+    for (const op of ['stream', 'input', 'resize', 'restart', 'close']) {
+      const res = op === 'stream' ? await authedTerm(request(app).get('/api/terminal/sessions/not-a-hex-id/stream')) : await authedTerm(request(app).post(`/api/terminal/sessions/not-a-hex-id/${op}`).set('Content-Type', 'application/json').send({}))
+      expect(res.status).toBe(400)
+    }
+  })
+
+  it('enforces the four-session limit and frees slots on close', async () => {
+    await closeAll()
+    const ids = []
+    for (let i = 0; i < 4; i++) {
+      const res = await authedTerm(request(app).post('/api/terminal/sessions').set('Content-Type', 'application/json').send({ path: root }))
+      expect(res.status).toBe(201)
+      ids.push(res.body.id)
+    }
+    const fifth = await authedTerm(request(app).post('/api/terminal/sessions').set('Content-Type', 'application/json').send({ path: root }))
+    expect(fifth.status).toBe(409)
+    expect(fifth.body.error).toContain('Session limit')
+
+    // Closing one frees its slot for a new session.
+    await authedTerm(request(app).post(`/api/terminal/sessions/${ids[0]}/close`))
+    const sixth = await authedTerm(request(app).post('/api/terminal/sessions').set('Content-Type', 'application/json').send({ path: root }))
+    expect(sixth.status).toBe(201)
+    await closeAll()
+  })
+
+  it('rejects a restart when every session slot is occupied', async () => {
+    await closeAll()
+    const ids = []
+    for (let i = 0; i < 3; i++) {
+      const res = await authedTerm(request(app).post('/api/terminal/sessions').set('Content-Type', 'application/json').send({ path: root }))
+      expect(res.status).toBe(201)
+      ids.push(res.body.id)
+    }
+    // A fourth session that exits on its own, leaving a finished record.
+    const exited = (await authedTerm(request(app).post('/api/terminal/sessions').set('Content-Type', 'application/json').send({ path: root }))).body
+    const stream = await StreamClient.connect(port, exited.id)
+    try {
+      await authedTerm(request(app).post(`/api/terminal/sessions/${exited.id}/input`).set('Content-Type', 'application/json').send({ data: 'exit\n' }))
+      await stream.waitFrame('exit')
+    } finally {
+      stream.close()
+    }
+
+    // Fill the last slot with a live session: four live plus one finished record.
+    const fourth = await authedTerm(request(app).post('/api/terminal/sessions').set('Content-Type', 'application/json').send({ path: root }))
+    expect(fourth.status).toBe(201)
+
+    // Restarting the finished session would exceed the live cap → 409.
+    const rejected = await authedTerm(request(app).post(`/api/terminal/sessions/${exited.id}/restart`))
+    expect(rejected.status).toBe(409)
+    expect(rejected.body.error).toContain('Session limit')
+
+    // Closing one live session frees a slot; the restart now succeeds. The
+    // closed shell finalizes asynchronously on its exit event, so wait for the
+    // slot to actually be free before restarting.
+    await authedTerm(request(app).post(`/api/terminal/sessions/${ids[0]}/close`))
+    for (let i = 0; i < 100; i++) {
+      const a = (await listSessions()).find(x => x.id === ids[0])
+      if (!a || a.state === 'closed') break
+      await new Promise(r => setTimeout(r, 50))
+    }
+    const restarted = await authedTerm(request(app).post(`/api/terminal/sessions/${exited.id}/restart`))
+    expect(restarted.status).toBe(200) // restart reuses the record, so it answers 200 like other session ops
+    expect(restarted.body.state).toBe('starting')
+    await closeAll()
+  })
+
+  it('closes sessions that never acquire a viewer within the timeout', async () => {
+    process.env.TERMINAL_VIEWER_TIMEOUT_MS = '800'
+    try {
+      const created = (await authedTerm(request(app).post('/api/terminal/sessions').set('Content-Type', 'application/json').send({ path: root }))).body
+      let state = null
+      for (let i = 0; i < 50 && state === null; i++) {
+        const s = (await listSessions()).find(x => x.id === created.id)
+        if (s.state === 'closed') state = s
+        else await new Promise(r => setTimeout(r, 100))
+      }
+      expect(state).not.toBeNull()
+      expect(state.closeReason).toBe('timeout')
+    } finally {
+      delete process.env.TERMINAL_VIEWER_TIMEOUT_MS
+    }
+  })
+
+  it('preserves user startup variables and strips the app token from shell env', async () => {
+    const dumpFile = path.join(root, '.term-env-dump')
+    fs.rmSync(dumpFile, { force: true })
+    const fakeShell = path.join(base, 'fake-terminal-shell.sh')
+    // Write-then-rename so the marker file only appears once fully written —
+    // a plain `env > file` creates it empty first and races the reader.
+    fs.writeFileSync(fakeShell, `#!/bin/bash\nenv > ${dumpFile}.tmp && mv ${dumpFile}.tmp ${dumpFile}\nsleep 30\n`)
+    fs.chmodSync(fakeShell, 0o755)
+
+    process.env.TERMINAL_SHELL = fakeShell
+    process.env.MIRAGE_TEST_VAR = 'mirage-value' // an intentionally supplied startup variable
+    try {
+      const created = (await authedTerm(request(app).post('/api/terminal/sessions').set('Content-Type', 'application/json').send({ path: root }))).body
+      await waitForMarker(dumpFile)
+      const envDump = fs.readFileSync(dumpFile, 'utf-8')
+      expect(envDump).toContain('MIRAGE_TEST_VAR=mirage-value') // startup variables pass through untouched
+      expect(envDump).not.toContain('TERACODE_TERMINAL_TOKEN') // the app secret never reaches a shell
+      await authedTerm(request(app).post(`/api/terminal/sessions/${created.id}/close`))
+    } finally {
+      delete process.env.TERMINAL_SHELL
+      delete process.env.MIRAGE_TEST_VAR
+      fs.rmSync(dumpFile, { force: true })
+      fs.rmSync(`${dumpFile}.tmp`, { force: true })
+      fs.rmSync(fakeShell, { force: true })
+    }
+  })
+
+  it('injects cloud credentials for active sessions into new shells', async () => {
+    // The earlier suites deleted their stores, so this creates a fresh one.
+    // Create leaves the store unlocked; logging in through the fake CLI then
+    // activates an AWS session, exactly like the UI login flow.
+    const created = await request(app).post('/api/cloud/credentials').send({ action: 'create', passphrase: 'terminal-creds-pass', credentials: { aws: { accessKeyId: 'AKIATERMINAL01', secretAccessKey: 'term-secret-key', sessionToken: '', region: '' } } })
+    expect(created.status).toBe(200)
+    const login = await request(app).post('/api/cloud/login').send({ provider: 'aws' })
+    expect(login.status).toBe(200)
+
+    const dumpFile = path.join(root, '.term-cred-dump')
+    fs.rmSync(dumpFile, { force: true })
+    const fakeShell = path.join(base, 'fake-terminal-shell-creds.sh')
+    // Write-then-rename so the marker file only appears once fully written.
+    fs.writeFileSync(fakeShell, `#!/bin/bash\nenv > ${dumpFile}.tmp && mv ${dumpFile}.tmp ${dumpFile}\nsleep 30\n`)
+    fs.chmodSync(fakeShell, 0o755)
+
+    process.env.TERMINAL_SHELL = fakeShell
+    try {
+      const session = (await authedTerm(request(app).post('/api/terminal/sessions').set('Content-Type', 'application/json').send({ path: root }))).body
+      await waitForMarker(dumpFile)
+      const envDump = fs.readFileSync(dumpFile, 'utf-8')
+      expect(envDump).toContain('AWS_ACCESS_KEY_ID=AKIATERMINAL01') // same credentials as button-triggered runs
+      expect(envDump).toContain('AWS_SECRET_ACCESS_KEY=term-secret-key')
+      expect(envDump).not.toContain('TERACODE_TERMINAL_TOKEN') // the app secret is still stripped
+      await authedTerm(request(app).post(`/api/terminal/sessions/${session.id}/close`))
+    } finally {
+      delete process.env.TERMINAL_SHELL
+      fs.rmSync(dumpFile, { force: true })
+      fs.rmSync(`${dumpFile}.tmp`, { force: true })
+      fs.rmSync(fakeShell, { force: true })
+      // Deleting the store also clears the in-memory unlock and sessions, so
+      // later tests see a clean credential state.
+      await request(app).post('/api/cloud/credentials').send({ action: 'delete', passphrase: 'terminal-creds-pass' })
+    }
+  })
+
+  it('reports an actionable message when node-pty is missing or unsupported', async () => {
+    // The loader seam is reached through serverModule so the test manipulates
+    // the exact terminal.cjs instance the app uses (a direct import of
+    // ./terminal.cjs can resolve to a different module under vitest).
+    const setPtyLoaderForTests = serverModule.setPtyLoaderForTests
+    expect(typeof setPtyLoaderForTests).toBe('function')
+    try {
+      setPtyLoaderForTests(() => {
+        throw Object.assign(new Error("Cannot find module 'node-pty'"), { code: 'MODULE_NOT_FOUND' })
+      })
+
+      const status = await termReq(request(app).get('/api/terminal/status'))
+      expect(status.status).toBe(200)
+      expect(status.body.available).toBe(false)
+      expect(status.body.reason).toContain('node-pty')
+
+      // Creation fails with 503 and an actionable message — no PTY allocated.
+      const created = await authedTerm(request(app).post('/api/terminal/sessions').set('Content-Type', 'application/json').send({ path: root }))
+      expect(created.status).toBe(503)
+      expect(created.body.error).toContain('node-pty')
+    } finally {
+      setPtyLoaderForTests(null) // restore the real require-based loader
+    }
+  })
+
+  it('disables the whole feature with TERMINAL_DISABLE=1', async () => {
+    process.env.TERMINAL_DISABLE = '1'
+    try {
+      const status = await termReq(request(app).get('/api/terminal/status'))
+      expect(status.body.available).toBe(false)
+      expect(status.body.reason).toContain('TERMINAL_DISABLE')
+      const created = await authedTerm(request(app).post('/api/terminal/sessions').set('Content-Type', 'application/json').send({ path: root }))
+      expect(created.status).toBe(503)
+    } finally {
+      delete process.env.TERMINAL_DISABLE
+    }
+  })
+
+  it('releases every session on application shutdown', async () => {
+    const created = (await authedTerm(request(app).post('/api/terminal/sessions').set('Content-Type', 'application/json').send({ path: root }))).body
+    await new Promise(r => setTimeout(r, 300)) // let it reach running
+    await serverModule.stopTerminals()
+    // Shutdown finalizes on the PTY exit event (kill is asynchronous), so poll
+    // for the observable closed state instead of asserting synchronously.
+    let s = null
+    for (let i = 0; i < 100 && s === null; i++) {
+      const found = (await listSessions()).find(x => x.id === created.id)
+      if (found.state === 'closed') s = found
+      else await new Promise(r => setTimeout(r, 50))
+    }
+    expect(s).not.toBeNull()
+    expect(s.closeReason).toBe('shutdown')
+  })
+
+  it('removes a background child that ignores SIGHUP on shutdown', async () => {
+    const created = (await authedTerm(request(app).post('/api/terminal/sessions').set('Content-Type', 'application/json').send({ path: root }))).body
+    const stream = await StreamClient.connect(port, created.id)
+    let childPid = 0 // declared outside the try so the post-shutdown assertions can use it
+    try {
+      // A subshell that ignores SIGHUP and idles: SIGHUP alone cannot kill it,
+      // so its death proves shutdown completed the SIGKILL escalation.
+      await authedTerm(request(app).post(`/api/terminal/sessions/${created.id}/input`).set('Content-Type', 'application/json')
+        .send({ data: `(trap '' HUP; sleep 30) & echo $! > ${root}/.term-hup-child.pid\n` }))
+      await waitForMarker(path.join(root, '.term-hup-child.pid'))
+      childPid = Number(fs.readFileSync(path.join(root, '.term-hup-child.pid'), 'utf-8').trim())
+      expect(childPid).toBeGreaterThan(0) // the marker held a real pid
+      expect(() => process.kill(childPid, 0)).not.toThrow() // alive while the session runs
+    } finally {
+      stream.close()
+    }
+    expect(childPid).toBeGreaterThan(0) // guard: the check below is meaningful, not a scope accident
+
+    await serverModule.stopTerminals() // resolves only after SIGHUP→SIGKILL completed
+
+    let gone = false
+    for (let i = 0; i < 60 && !gone; i++) {
+      try {
+        process.kill(childPid, 0)
+      } catch (err) {
+        if (err.code === 'ESRCH') gone = true
+        else throw err // only ESRCH proves the child is gone
+      }
+      if (!gone) await new Promise(r => setTimeout(r, 100))
+    }
+    expect(gone).toBe(true) // a SIGHUP-ignoring child must not outlive shutdown
+    fs.rmSync(path.join(root, '.term-hup-child.pid'), { force: true })
+  })
 })

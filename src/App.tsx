@@ -3,6 +3,7 @@ import FileExplorer from './FileExplorer'
 import FileEditor from './FileEditor'
 import FileDiff from './FileDiff'
 import TerraformPanel from './TerraformPanel'
+import TerminalPanel from './TerminalPanel'
 import CommitView from './CommitView'
 import GitPanel from './GitPanel'
 import CommandPalette from './CommandPalette'
@@ -10,6 +11,7 @@ import SettingsPanel from './SettingsPanel'
 import {
   getGitCommitDiff,
   getGitFileDiff,
+  getTerminalStatus,
   listDir,
   openFileEvents,
   openFolder,
@@ -79,6 +81,25 @@ const DEFAULT_RIGHT_WIDTH = 360
 const MIN_SIDEBAR_WIDTH = 240
 // The center pane is never allowed to shrink below this while dragging.
 const MIN_CENTER_WIDTH = 320
+
+// Terminal panel height (px) — user-adjustable by dragging its top edge.
+const TERMINAL_HEIGHT_KEY = 'terracode.terminal-height'
+const DEFAULT_TERMINAL_HEIGHT = 260
+const MIN_TERMINAL_HEIGHT = 140
+// Keep at least this much room for the editor area while dragging the terminal edge.
+const MIN_EDITOR_AREA = 160
+
+function loadStoredTerminalHeight(): number {
+  try {
+    const raw = localStorage.getItem(TERMINAL_HEIGHT_KEY)
+    if (raw === null) return DEFAULT_TERMINAL_HEIGHT
+    const n = Number.parseInt(raw, 10)
+    return Number.isFinite(n) && n >= MIN_TERMINAL_HEIGHT ? n : DEFAULT_TERMINAL_HEIGHT
+  } catch {
+    // storage unavailable; fall back to the default height
+    return DEFAULT_TERMINAL_HEIGHT
+  }
+}
 
 function loadStoredWidth(key: string, fallback: number): number {
   try {
@@ -234,8 +255,31 @@ function App() {
   const toggleLeftSidebar = useCallback(() => setSidebarVis(v => ({ ...v, left: !v.left })), [])
   const toggleRightSidebar = useCallback(() => setSidebarVis(v => ({ ...v, right: !v.right })), [])
 
+  // Integrated terminal: opt-in (button or Ctrl/Cmd+`), hidden by default. The
+  // panel stays mounted once enabled so minimizing only hides it — the SSE
+  // connection and shell keep running and restore shows the same session.
+  const [terminalOpen, setTerminalOpen] = useState(false)
+  const toggleTerminal = useCallback(() => setTerminalOpen(o => !o), [])
+  // Panel height (px), persisted; dragged via the handle above the panel.
+  const [terminalHeight, setTerminalHeight] = useState(loadStoredTerminalHeight)
+  const terminalHeightRef = useRef(terminalHeight)
+  useEffect(() => {
+    terminalHeightRef.current = terminalHeight
+  }, [terminalHeight])
+  // null = still probing; false = server cannot offer shells (button hidden).
+  const [terminalEnabled, setTerminalEnabled] = useState<boolean | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    getTerminalStatus()
+      .then(st => { if (!cancelled) setTerminalEnabled(st.available) })
+      .catch(() => { if (!cancelled) setTerminalEnabled(false) })
+    return () => { cancelled = true }
+  }, [])
+
   // Global shortcuts: Ctrl/Cmd+P opens the palette; Ctrl+B / Ctrl+Shift+B toggle
-  // the sidebars. Runs regardless of focus (the palette input handles its own keys).
+  // the sidebars; Ctrl/Cmd+` toggles the integrated terminal. Runs regardless of
+  // focus (the palette input handles its own keys).
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (!(e.ctrlKey || e.metaKey) || e.altKey) return
@@ -249,11 +293,15 @@ function App() {
       } else if (key === 'b' && e.shiftKey) {
         e.preventDefault()
         toggleRightSidebar()
+      } else if (!e.shiftKey && key === '`') {
+        if (terminalEnabled !== true) return // feature disabled on this server
+        e.preventDefault()
+        toggleTerminal()
       }
     }
     window.addEventListener('keydown', handler)
     return () => window.removeEventListener('keydown', handler)
-  }, [toggleLeftSidebar, toggleRightSidebar])
+  }, [toggleLeftSidebar, toggleRightSidebar, terminalEnabled, toggleTerminal])
 
   // Terraform Log view: the active file path, or an empty string when no file
   // is open (null = closed). Switching files closes the view automatically.
@@ -353,7 +401,9 @@ function App() {
   const [leftWidth, setLeftWidth] = useState(() => loadStoredWidth(LEFT_WIDTH_KEY, DEFAULT_LEFT_WIDTH))
   const [rightWidth, setRightWidth] = useState(() => loadStoredWidth(RIGHT_WIDTH_KEY, DEFAULT_RIGHT_WIDTH))
   const containerRef = useRef<HTMLDivElement | null>(null)
-  const resizingRef = useRef<'left' | 'right' | null>(null)
+  const resizingRef = useRef<'left' | 'right' | 'terminal' | null>(null)
+  // Delta-based drag start for the terminal height (pointer Y + height at grab).
+  const termDragStartRef = useRef<{ y: number; h: number } | null>(null)
   // Refs mirror the widths so endResize persists the exact value even if the last
   // drag frame's effect hasn't run yet (moveResize updates them synchronously).
   const leftWidthRef = useRef(leftWidth)
@@ -366,10 +416,11 @@ function App() {
   }, [rightWidth])
 
   const startResize = useCallback(
-    (side: 'left' | 'right') => (e: ReactPointerEvent<HTMLDivElement>) => {
+    (side: 'left' | 'right' | 'terminal') => (e: ReactPointerEvent<HTMLDivElement>) => {
       e.preventDefault()
       resizingRef.current = side
-      document.body.classList.add('sb-resizing')
+      document.body.classList.add(side === 'terminal' ? 'tb-resizing' : 'sb-resizing')
+      if (side === 'terminal') termDragStartRef.current = { y: e.clientY, h: terminalHeightRef.current }
       e.currentTarget.setPointerCapture(e.pointerId)
     },
     [],
@@ -386,11 +437,19 @@ function App() {
       const w = Math.min(Math.max(e.clientX - rect.left, MIN_SIDEBAR_WIDTH), max)
       leftWidthRef.current = w
       setLeftWidth(w)
-    } else {
+    } else if (side === 'right') {
       const max = Math.max(MIN_SIDEBAR_WIDTH, rect.width - leftWidthRef.current - MIN_CENTER_WIDTH)
       const w = Math.min(Math.max(rect.right - e.clientX, MIN_SIDEBAR_WIDTH), max)
       rightWidthRef.current = w
       setRightWidth(w)
+    } else {
+      // Terminal height: delta from the grab point (drag up grows the panel).
+      const start = termDragStartRef.current
+      if (!start) return
+      const max = Math.max(MIN_TERMINAL_HEIGHT, rect.height - MIN_EDITOR_AREA)
+      const h = Math.min(Math.max(start.h + (start.y - e.clientY), MIN_TERMINAL_HEIGHT), max)
+      terminalHeightRef.current = h
+      setTerminalHeight(h)
     }
   }, [])
 
@@ -398,13 +457,16 @@ function App() {
     const side = resizingRef.current
     if (side === null) return
     resizingRef.current = null
+    termDragStartRef.current = null
     document.body.classList.remove('sb-resizing')
+    document.body.classList.remove('tb-resizing')
     try {
       e.currentTarget.releasePointerCapture(e.pointerId)
     } catch {
       // capture already released; nothing to do
     }
-    storeWidth(side === 'left' ? LEFT_WIDTH_KEY : RIGHT_WIDTH_KEY, side === 'left' ? leftWidthRef.current : rightWidthRef.current)
+    if (side === 'terminal') storeWidth(TERMINAL_HEIGHT_KEY, terminalHeightRef.current)
+    else storeWidth(side === 'left' ? LEFT_WIDTH_KEY : RIGHT_WIDTH_KEY, side === 'left' ? leftWidthRef.current : rightWidthRef.current)
   }, [])
 
   const resetLeftWidth = useCallback(() => {
@@ -415,6 +477,11 @@ function App() {
   const resetRightWidth = useCallback(() => {
     setRightWidth(DEFAULT_RIGHT_WIDTH)
     storeWidth(RIGHT_WIDTH_KEY, DEFAULT_RIGHT_WIDTH)
+  }, [])
+
+  const resetTerminalHeight = useCallback(() => {
+    setTerminalHeight(DEFAULT_TERMINAL_HEIGHT)
+    storeWidth(TERMINAL_HEIGHT_KEY, DEFAULT_TERMINAL_HEIGHT)
   }, [])
 
   // Derived view state for the active tab, computed early so effects can depend on it.
@@ -940,6 +1007,7 @@ function App() {
               findAvailable={findAvailable}
               findActive={fileFindOpen}
               onToggleFind={() => setFileFindOpen(o => !o)}
+              onToggleTerminal={terminalEnabled === true ? toggleTerminal : undefined}
             />
 
             {/* Code area — hidden while the Terraform Log view is open */}
@@ -1092,8 +1160,29 @@ function App() {
               logOpen={tfLogOpen}
               onToggleLog={() => setTfLogPath(p => (p === activePath ? null : activePath))}
               onOpenLog={() => setTfLogPath(activePath)}
+              onToggleTerminal={terminalEnabled === true ? toggleTerminal : undefined}
             />
           </div>
+        )}
+
+        {/* Integrated terminal: below the editor in every mode; stays mounted
+            once enabled so minimizing keeps its connection and shell alive. */}
+        {terminalEnabled === true && terminalOpen && (
+          <div
+            className="tb-resizer"
+            role="separator"
+            aria-orientation="horizontal"
+            aria-label="Resize the terminal panel"
+            title="Drag to resize — double-click to reset"
+            onPointerDown={startResize('terminal')}
+            onPointerMove={moveResize}
+            onPointerUp={endResize}
+            onPointerCancel={endResize}
+            onDoubleClick={resetTerminalHeight}
+          />
+        )}
+        {terminalEnabled === true && (
+          <TerminalPanel projectDir={tfDir} open={terminalOpen} onToggleOpen={toggleTerminal} height={terminalHeight} />
         )}
       </main>
 
