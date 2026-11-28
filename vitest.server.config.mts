@@ -10,7 +10,7 @@ export default defineConfig({
     outputFile: { json: '.reports/backend.json', junit: '.reports/backend.xml' },
     coverage: {
       provider: 'v8',
-      include: ['server.cjs'],
+      include: ['server.cjs', 'terminal.cjs'],
       reportsDirectory: 'coverage/backend',
       reporter: ['text', 'html', 'lcov', 'json-summary'],
       reportOnFailure: true,

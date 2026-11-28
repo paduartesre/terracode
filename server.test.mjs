@@ -5570,12 +5570,14 @@ describe('terminal (/api/terminal/*)', () => {
   it('kills background children when a session closes', async () => {
     const created = (await authedTerm(request(app).post('/api/terminal/sessions').set('Content-Type', 'application/json').send({ path: root }))).body
     const stream = await StreamClient.connect(port, created.id)
+    let childPid = 0 // declared outside the try so the post-close assertions can use it
     try {
       // Start a background child in the shell; it outlives the shell itself.
       await authedTerm(request(app).post(`/api/terminal/sessions/${created.id}/input`).set('Content-Type', 'application/json')
         .send({ data: `sleep 30 & echo $! > ${root}/.term-child.pid\n` }))
       await waitForMarker(path.join(root, '.term-child.pid'))
-      const childPid = Number(fs.readFileSync(path.join(root, '.term-child.pid'), 'utf-8').trim())
+      childPid = Number(fs.readFileSync(path.join(root, '.term-child.pid'), 'utf-8').trim())
+      expect(childPid).toBeGreaterThan(0) // the marker held a real pid
       expect(() => process.kill(childPid, 0)).not.toThrow() // alive while the session runs
 
       const closed = await authedTerm(request(app).post(`/api/terminal/sessions/${created.id}/close`))
@@ -5583,10 +5585,18 @@ describe('terminal (/api/terminal/*)', () => {
     } finally {
       stream.close()
     }
-    // SIGHUP first, SIGKILL to the whole session after a grace period.
+    expect(childPid).toBeGreaterThan(0) // guard: the check below is meaningful, not a scope accident
+    // SIGHUP first, SIGKILL to the whole session after a grace period. Only
+    // ESRCH proves the process is gone; any other error (EPERM, …) must fail
+    // the test instead of masquerading as success.
     let gone = false
     for (let i = 0; i < 60 && !gone; i++) {
-      try { process.kill(childPid, 0) } catch { gone = true }
+      try {
+        process.kill(childPid, 0)
+      } catch (err) {
+        if (err.code === 'ESRCH') gone = true
+        else throw err
+      }
       if (!gone) await new Promise(r => setTimeout(r, 100))
     }
     expect(gone).toBe(true) // the background child must not outlive the terminal
@@ -5664,6 +5674,48 @@ describe('terminal (/api/terminal/*)', () => {
     await authedTerm(request(app).post(`/api/terminal/sessions/${ids[0]}/close`))
     const sixth = await authedTerm(request(app).post('/api/terminal/sessions').set('Content-Type', 'application/json').send({ path: root }))
     expect(sixth.status).toBe(201)
+    await closeAll()
+  })
+
+  it('rejects a restart when every session slot is occupied', async () => {
+    await closeAll()
+    const ids = []
+    for (let i = 0; i < 3; i++) {
+      const res = await authedTerm(request(app).post('/api/terminal/sessions').set('Content-Type', 'application/json').send({ path: root }))
+      expect(res.status).toBe(201)
+      ids.push(res.body.id)
+    }
+    // A fourth session that exits on its own, leaving a finished record.
+    const exited = (await authedTerm(request(app).post('/api/terminal/sessions').set('Content-Type', 'application/json').send({ path: root }))).body
+    const stream = await StreamClient.connect(port, exited.id)
+    try {
+      await authedTerm(request(app).post(`/api/terminal/sessions/${exited.id}/input`).set('Content-Type', 'application/json').send({ data: 'exit\n' }))
+      await stream.waitFrame('exit')
+    } finally {
+      stream.close()
+    }
+
+    // Fill the last slot with a live session: four live plus one finished record.
+    const fourth = await authedTerm(request(app).post('/api/terminal/sessions').set('Content-Type', 'application/json').send({ path: root }))
+    expect(fourth.status).toBe(201)
+
+    // Restarting the finished session would exceed the live cap → 409.
+    const rejected = await authedTerm(request(app).post(`/api/terminal/sessions/${exited.id}/restart`))
+    expect(rejected.status).toBe(409)
+    expect(rejected.body.error).toContain('Session limit')
+
+    // Closing one live session frees a slot; the restart now succeeds. The
+    // closed shell finalizes asynchronously on its exit event, so wait for the
+    // slot to actually be free before restarting.
+    await authedTerm(request(app).post(`/api/terminal/sessions/${ids[0]}/close`))
+    for (let i = 0; i < 100; i++) {
+      const a = (await listSessions()).find(x => x.id === ids[0])
+      if (!a || a.state === 'closed') break
+      await new Promise(r => setTimeout(r, 50))
+    }
+    const restarted = await authedTerm(request(app).post(`/api/terminal/sessions/${exited.id}/restart`))
+    expect(restarted.status).toBe(200) // restart reuses the record, so it answers 200 like other session ops
+    expect(restarted.body.state).toBe('starting')
     await closeAll()
   })
 
@@ -5788,7 +5840,7 @@ describe('terminal (/api/terminal/*)', () => {
   it('releases every session on application shutdown', async () => {
     const created = (await authedTerm(request(app).post('/api/terminal/sessions').set('Content-Type', 'application/json').send({ path: root }))).body
     await new Promise(r => setTimeout(r, 300)) // let it reach running
-    serverModule.stopTerminals()
+    await serverModule.stopTerminals()
     // Shutdown finalizes on the PTY exit event (kill is asynchronous), so poll
     // for the observable closed state instead of asserting synchronously.
     let s = null
@@ -5799,5 +5851,39 @@ describe('terminal (/api/terminal/*)', () => {
     }
     expect(s).not.toBeNull()
     expect(s.closeReason).toBe('shutdown')
+  })
+
+  it('removes a background child that ignores SIGHUP on shutdown', async () => {
+    const created = (await authedTerm(request(app).post('/api/terminal/sessions').set('Content-Type', 'application/json').send({ path: root }))).body
+    const stream = await StreamClient.connect(port, created.id)
+    let childPid = 0 // declared outside the try so the post-shutdown assertions can use it
+    try {
+      // A subshell that ignores SIGHUP and idles: SIGHUP alone cannot kill it,
+      // so its death proves shutdown completed the SIGKILL escalation.
+      await authedTerm(request(app).post(`/api/terminal/sessions/${created.id}/input`).set('Content-Type', 'application/json')
+        .send({ data: `(trap '' HUP; sleep 30) & echo $! > ${root}/.term-hup-child.pid\n` }))
+      await waitForMarker(path.join(root, '.term-hup-child.pid'))
+      childPid = Number(fs.readFileSync(path.join(root, '.term-hup-child.pid'), 'utf-8').trim())
+      expect(childPid).toBeGreaterThan(0) // the marker held a real pid
+      expect(() => process.kill(childPid, 0)).not.toThrow() // alive while the session runs
+    } finally {
+      stream.close()
+    }
+    expect(childPid).toBeGreaterThan(0) // guard: the check below is meaningful, not a scope accident
+
+    await serverModule.stopTerminals() // resolves only after SIGHUP→SIGKILL completed
+
+    let gone = false
+    for (let i = 0; i < 60 && !gone; i++) {
+      try {
+        process.kill(childPid, 0)
+      } catch (err) {
+        if (err.code === 'ESRCH') gone = true
+        else throw err // only ESRCH proves the child is gone
+      }
+      if (!gone) await new Promise(r => setTimeout(r, 100))
+    }
+    expect(gone).toBe(true) // a SIGHUP-ignoring child must not outlive shutdown
+    fs.rmSync(path.join(root, '.term-hup-child.pid'), { force: true })
   })
 })

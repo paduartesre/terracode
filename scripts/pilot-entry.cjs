@@ -55,10 +55,13 @@ const web = http.createServer((req, res) => {
 });
 const backend = http.createServer(api);
 let stopping = false;
-function stop(code) {
+async function stop(code) {
   if (stopping) return;
   stopping = true;
-  api.stopTerminals?.(); // terminate any terminal shells before the servers close
+  // Await the full SIGHUP→SIGKILL escalation before closing the servers: once
+  // they are gone nothing keeps the event loop alive, and an early exit would
+  // skip the SIGKILL pass for children that ignore SIGHUP.
+  await api.stopTerminals?.();
   api.stopFileWatcher();
   web.close();
   backend.close();
@@ -68,10 +71,10 @@ function stop(code) {
 }
 for (const server of [web, backend]) server.on('error', error => {
   console.error(error.code === 'EADDRINUSE' ? 'Port 5173 or 3001 is already in use. Stop the other instance and retry.' : error.message);
-  stop(1);
+  void stop(1);
 });
-process.on('SIGINT', () => stop(0));
-process.on('SIGTERM', () => stop(0));
+process.on('SIGINT', () => { void stop(0) });
+process.on('SIGTERM', () => { void stop(0) });
 backend.listen(3001, '127.0.0.1', () => {
   if (stopping) return backend.close();
   web.listen(5173, '127.0.0.1', () => {

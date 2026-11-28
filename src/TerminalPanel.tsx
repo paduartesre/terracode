@@ -280,8 +280,14 @@ export default function TerminalPanel({ projectDir, open, onToggleOpen, height }
   }
 
   // Explicit selection wins; otherwise the first live session (or any record,
-  // so a reopened panel shows its status). Derived — no effect needed.
+  // so a reopened panel shows its status). Derived — no effect needed. This is
+  // the single source of truth for tab highlight, visible host and footer: an
+  // explicit id that vanished (closed elsewhere) or was never set falls back to
+  // another available session instead of leaving everything hidden.
   const active = sessions.find(s => s.id === activeId) ?? sessions.find(isLive) ?? sessions[0] ?? null
+  // The limit counts live sessions only — finished records are status notes and
+  // hold no shell, so they never block a new terminal (mirrors the backend cap).
+  const liveCount = sessions.filter(isLive).length
 
   return (
     <section
@@ -315,7 +321,7 @@ export default function TerminalPanel({ projectDir, open, onToggleOpen, height }
             <button
               key={s.id}
               type="button"
-              className={`terminal-tab${s.id === activeId ? ' active' : ''}`}
+              className={`terminal-tab${s.id === active?.id ? ' active' : ''}`}
               title={`${s.dir}${isLive(s) ? ` (${s.state})` : ''} — double-click to rename`}
               onClick={() => {
                 setActiveId(s.id)
@@ -332,11 +338,11 @@ export default function TerminalPanel({ projectDir, open, onToggleOpen, height }
           type="button"
           className="terminal-new"
           onClick={() => void handleNew()}
-          disabled={projectDir === null || creating || sessions.length >= status.maxSessions}
+          disabled={projectDir === null || creating || liveCount >= status.maxSessions}
           title={
             projectDir === null
               ? 'Load a Terraform project first'
-              : sessions.length >= status.maxSessions
+              : liveCount >= status.maxSessions
                 ? `Session limit reached (${status.maxSessions})`
                 : `New terminal in ${projectDir}`
           }
@@ -367,7 +373,7 @@ export default function TerminalPanel({ projectDir, open, onToggleOpen, height }
           </p>
         )}
         {sessions.map(s => (
-          <div key={s.id} className={`terminal-host${s.id === activeId ? '' : ' hidden'}`}>
+          <div key={s.id} className={`terminal-host${s.id === active?.id ? '' : ' hidden'}`}>
             {isLive(s) && (
               <div
                 ref={el => {

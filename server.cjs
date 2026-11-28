@@ -4575,11 +4575,15 @@ createTerminalApi(app, { resolveSafe, respondResolve, port: Number(PORT), allowe
 if (require.main === module) {
   startFileWatcher();
   // Terminate terminal sessions on shutdown so no shell outlives the process.
+  // Await the full SIGHUP→SIGKILL escalation before exiting: an immediate exit
+  // would skip the SIGKILL pass and leave behind children that ignore SIGHUP.
   for (const signal of ['SIGINT', 'SIGTERM']) {
     process.on(signal, () => {
-      stopAllTerminalSessions();
-      stopFileWatcher();
-      process.exit(signal === 'SIGINT' ? 0 : 143);
+      void (async () => {
+        await stopAllTerminalSessions();
+        stopFileWatcher();
+        process.exit(signal === 'SIGINT' ? 0 : 143);
+      })();
     });
   }
   app.listen(PORT, HOST, () => {

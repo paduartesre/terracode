@@ -182,40 +182,52 @@ function signalSession(sessionId, signal) {
   }
 }
 
+// Grace period between SIGHUP and the SIGKILL escalation when tearing down a
+// shell's session.
+const KILL_GRACE_MS = 2_000;
+
 // Terminate every shell this session has spawned and their remaining children,
 // platform-appropriately: SIGHUP to each whole session first (the PTY's normal
 // hangup), then SIGKILL after a short grace period. Covers orphans left behind
 // by earlier incarnations of a restarted session too. (Theoretical pid reuse
 // between death and teardown is accepted, as in real terminal emulators.)
-function terminatePids(record) {
+// Resolves once the SIGKILL escalation has been sent; keepAlive holds the event
+// loop open until then so an exiting process cannot skip it.
+function terminatePids(record, { keepAlive = false } = {}) {
   const pids = record.pids;
   record.pids = [];
-  if (pids.length === 0) return;
+  if (pids.length === 0) return Promise.resolve();
   for (const pid of pids) signalSession(pid, 'SIGHUP');
-  setTimeout(() => {
-    for (const pid of pids) signalSession(pid, 'SIGKILL');
-  }, 2_000).unref();
+  return new Promise(resolve => {
+    const t = setTimeout(() => {
+      for (const pid of pids) signalSession(pid, 'SIGKILL');
+      resolve();
+    }, KILL_GRACE_MS);
+    if (!keepAlive) t.unref();
+  });
 }
 
 // Terminate the live shell (and all previous incarnations' groups) and make
 // sure the record is finalized even in pathological cases, so no timers,
-// viewers or buffers outlive the close request.
-function killShell(record) {
+// viewers or buffers outlive the close request. Resolves with the kill
+// escalation's completion.
+function killShell(record, opts = {}) {
   const pty = record.pty;
-  if (!pty || !pty.pid) return;
+  if (!pty || !pty.pid) return Promise.resolve();
   record.pty = null; // no further output events from here on
   try {
     pty.kill();
   } catch {
     // already gone
   }
-  terminatePids(record);
+  const escalation = terminatePids(record, opts);
   setTimeout(() => {
     if (record.state === 'starting' || record.state === 'running') {
       releaseRecord(record, 'closed', { closeReason: record.closeReason ?? 'user' });
       endViewers(record, { type: 'closed', reason: record.closeReason ?? 'user' });
     }
   }, 5_000).unref();
+  return escalation;
 }
 
 function clearTimers(record) {
@@ -258,18 +270,19 @@ function endViewers(record, frame) {
   }
 }
 
-function closeSession(record, reason) {
-  if (record.state === 'closed') return;
+// Resolves once this session's teardown (including the kill escalation) is done.
+function closeSession(record, reason, opts = {}) {
+  if (record.state === 'closed') return Promise.resolve();
   record.closeReason = reason;
   const hadShell = record.pty !== null && (record.state === 'starting' || record.state === 'running');
   endViewers(record, { type: 'closed', reason });
   if (hadShell) {
     record.closing = true; // the exit event finalizes this as 'closed', not 'exited'
-    killShell(record);
-  } else {
-    terminatePids(record); // no live shell, but earlier incarnations may have orphans
-    releaseRecord(record, 'closed');
+    return killShell(record, opts);
   }
+  terminatePids(record, opts); // no live shell, but earlier incarnations may have orphans
+  releaseRecord(record, 'closed');
+  return Promise.resolve();
 }
 
 // Spawn a shell for a record that is in 'starting' or being restarted.
@@ -701,6 +714,13 @@ function createTerminalApi(app, { resolveSafe, respondResolve, port, allowedOrig
     if (!status.available) {
       return res.status(503).json({ error: `Terminal unavailable: ${status.reason}` });
     }
+    // Same live-session cap as creation: a restart allocates a fresh shell, so it
+    // must not push the total past the limit. The record itself is finished and
+    // holds no slot; only starting/running sessions count.
+    const liveCount = [...sessions.values()].filter(s => isLiveState(s.state)).length;
+    if (liveCount >= MAX_SESSIONS) {
+      return res.status(409).json({ error: `Session limit reached (${MAX_SESSIONS}) — close an existing terminal first` });
+    }
 
     terminatePids(record); // a restart is a clean slate: reap the old shell's orphans too
     record.exitStatus = null;
@@ -732,11 +752,12 @@ function createTerminalApi(app, { resolveSafe, respondResolve, port, allowedOrig
 }
 
 // Application shutdown (server stop / pilot exit): terminate every session so
-// no shell outlives the TerraCode process.
-function stopAllTerminalSessions() {
-  for (const record of [...sessions.values()]) {
-    closeSession(record, 'shutdown');
-  }
+// no shell outlives the TerraCode process. Resolves only after each session's
+// SIGHUP→SIGKILL escalation has completed — keepAlive timers hold the event
+// loop open until then, so a caller that awaits this and exits is guaranteed
+// not to skip the SIGKILL pass (children that ignore SIGHUP still die).
+async function stopAllTerminalSessions() {
+  await Promise.all([...sessions.values()].map(record => closeSession(record, 'shutdown', { keepAlive: true })));
 }
 
 // Test-only: drop the cached node-pty load result so both availability branches
